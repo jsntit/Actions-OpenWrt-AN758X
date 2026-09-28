@@ -42,6 +42,9 @@ mkdir -p package/custom
 git clone --depth=1 https://github.com/sirpdboy/luci-app-poweroffdevice.git package/custom/poweroffdevice
 git clone --depth=1 https://github.com/isalikai/luci-app-owq-wol.git package/custom/owq-wol
 git clone --depth=1 https://github.com/gdy666/luci-app-lucky.git package/custom/lucky
+# 集客 AC 控制器（gecoosac 后端 + luci-app-gecoosac 界面），AGPL-3.0
+# 启用方式：在 configs/*.config 加 CONFIG_PACKAGE_luci-app-gecoosac=y（后端 gecoosac 经 LUCI_DEPENDS 自动拉取）
+git clone --depth=1 https://github.com/laipeng668/luci-app-gecoosac.git package/custom/gecoosac
 git clone --depth=1 https://github.com/sbwml/luci-app-openlist2.git package/custom/openlist2
 
 git clone --depth=1 https://github.com/stackia/rtp2httpd.git package/custom/rtp2httpd

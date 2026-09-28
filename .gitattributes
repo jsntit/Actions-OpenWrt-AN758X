@@ -1,0 +1,8 @@
+# 强制所有文本文件以 LF 换行提交/检出，避免 Windows 编辑带入 CRLF 导致
+# GitHub Actions 中脚本 shebang (#!/bin/bash^M) 报 bad interpreter 的问题
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.config text eol=lf

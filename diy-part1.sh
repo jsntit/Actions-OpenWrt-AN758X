@@ -18,6 +18,7 @@ add_feed() {
 
 add_feed "pon_drivers"   "src-git pon_drivers https://github.com/pbs05/openwrt-pon-drivers.git"
 add_feed "pon_userspace" "src-git pon_userspace https://github.com/pbs05/openwrt-pon-userspace.git"
+add_feed "gecoosac" "src-git gecoosac https://github.com/laipeng668/luci-app-gecoosac.git"
 
 echo "[diy-part1] 当前 feeds 配置："
 cat "$FEED_FILE"

@@ -181,7 +181,6 @@ if [ "$ADD_SMARTDNS" = "true" ]; then
   clone https://github.com/pymumu/luci-app-smartdns "$PKG_DIR/luci-app-smartdns" master
   clone https://github.com/pymumu/smartdns "$PKG_DIR/smartdns" master
 fi
-fi
 
 # --- 集客AC控制器 gecoosac（第三方仓库 laipeng668/luci-app-gecoosac）---
 # 仓库根目录含 luci-app-gecoosac/（前端）与 gecoosac/（后端预编译二进制）两个子目录，

@@ -30,6 +30,7 @@ ADD_LUCKY=false        # luci-app-lucky（DDNS + socat）
 ADD_TAILSCALE=false    # luci-app-tailscale
 ADD_OPENLIST=false     # luci-app-openlist2（alist/openlist 挂载）
 ADD_SMARTDNS=false     # luci-app-smartdns
+ADD_GECOOSAC=true      # luci-app-gecoosac（集客AC控制器，第三方仓库 laipeng668）
 
 ADD_LUCI_APP=true       # qwe3017/luci-app 仓库（monorepo）
                         #   ├─ luci-app-natmode     NAT 类型三选一（网络 → NAT 类型）
@@ -180,6 +181,19 @@ if [ "$ADD_SMARTDNS" = "true" ]; then
   clone https://github.com/pymumu/luci-app-smartdns "$PKG_DIR/luci-app-smartdns" master
   clone https://github.com/pymumu/smartdns "$PKG_DIR/smartdns" master
 fi
+fi
+
+# --- 集客AC控制器 gecoosac（第三方仓库 laipeng668/luci-app-gecoosac）---
+# 仓库根目录含 luci-app-gecoosac/（前端）与 gecoosac/（后端预编译二进制）两个子目录，
+# buildroot 递归扫描子目录 Makefile 即可注册 luci-app-gecoosac 与 gecoosac 两个包。
+# gecoosac/Makefile 通过 PROVIDES:=gecoosac-files gecoosac-common 满足前端全部依赖，
+# 无需额外包，也不会与官方 feeds 冲突（官方 packages 里没有 gecoosac）。
+if [ "$ADD_GECOOSAC" = "true" ]; then
+  if ! clone https://github.com/laipeng668/luci-app-gecoosac "$PKG_DIR/luci-app-gecoosac" main; then
+    echo "::error::luci-app-gecoosac 拉取失败，config 里的 =y 会被 defconfig 剔除"
+    exit 1
+  fi
+fi
 
 # ---------------------------------------------------------
 # 校验：默认开启的两个插件必须拉到，否则 defconfig 会静默剔除，
@@ -285,6 +299,7 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
   # 必装插件（config 里是 =y 的那几个）必须进索引，否则 defconfig 会静默剔除
   REQUIRED=""
   [ "$ADD_AIROHA_NPU" = "true" ] && REQUIRED="$REQUIRED luci-app-airoha-npu"
+  [ "$ADD_GECOOSAC" = "true" ] && REQUIRED="$REQUIRED luci-app-gecoosac"
   if [ "$ADD_LUCI_APP" = "true" ]; then
     REQUIRED="$REQUIRED luci-app-natmode luci-app-pon-status"
   fi

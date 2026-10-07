@@ -188,10 +188,21 @@ fi
 # gecoosac/Makefile 通过 PROVIDES:=gecoosac-files gecoosac-common 满足前端全部依赖，
 # 无需额外包，也不会与官方 feeds 冲突（官方 packages 里没有 gecoosac）。
 if [ "$ADD_GECOOSAC" = "true" ]; then
-  if ! clone https://github.com/laipeng668/luci-app-gecoosac "$PKG_DIR/luci-app-gecoosac" main; then
+  if ! clone https://github.com/laipeng668/luci-app-gecoosac "$PKG_DIR/luci-app-gecoosac-src" main; then
     echo "::error::luci-app-gecoosac 拉取失败，config 里的 =y 会被 defconfig 剔除"
     exit 1
   fi
+  # 展平：该仓库根目录无 Makefile，前端包在 luci-app-gecoosac/ 子目录、后端包在 gecoosac/ 子目录。
+  # 若整仓留在同名目录 package/custom/luci-app-gecoosac/，会触发下方“清理重复嵌套目录”逻辑把前端
+  # 子目录误删（luci-app-gecoosac/luci-app-gecoosac 含 Makefile 被判为重复嵌套），导致包无法注册。
+  # 这里把两个子包提到 PKG_DIR 顶层，既避开误删、又满足 buildroot 递归扫描与 REQUIRED 顶层 Makefile 判定。
+  if [ -d "$PKG_DIR/luci-app-gecoosac-src/luci-app-gecoosac" ]; then
+    mv "$PKG_DIR/luci-app-gecoosac-src/luci-app-gecoosac" "$PKG_DIR/luci-app-gecoosac"
+  fi
+  if [ -d "$PKG_DIR/luci-app-gecoosac-src/gecoosac" ]; then
+    mv "$PKG_DIR/luci-app-gecoosac-src/gecoosac" "$PKG_DIR/gecoosac"
+  fi
+  rm -rf "$PKG_DIR/luci-app-gecoosac-src"
 fi
 
 # ---------------------------------------------------------

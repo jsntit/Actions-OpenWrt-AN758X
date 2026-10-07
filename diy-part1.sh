@@ -30,7 +30,7 @@ ADD_LUCKY=false        # luci-app-lucky（DDNS + socat）
 ADD_TAILSCALE=false    # luci-app-tailscale
 ADD_OPENLIST=false     # luci-app-openlist2（alist/openlist 挂载）
 ADD_SMARTDNS=false     # luci-app-smartdns
-ADD_GECOOSAC=true      # luci-app-gecoosac（集客AC控制器，第三方仓库 laipeng668）
+ADD_VIKING=true        # VIKINGYFY/packages 源：homeproxy / sing-box / 集客AC（luci-app-gecoosac）
 
 ADD_LUCI_APP=true       # qwe3017/luci-app 仓库（monorepo）
                         #   ├─ luci-app-natmode     NAT 类型三选一（网络 → NAT 类型）
@@ -182,30 +182,36 @@ if [ "$ADD_SMARTDNS" = "true" ]; then
   clone https://github.com/pymumu/smartdns "$PKG_DIR/smartdns" master
 fi
 
-# --- 集客AC控制器 gecoosac（第三方仓库 laipeng668/luci-app-gecoosac）---
-# 仓库根目录含 luci-app-gecoosac/（前端）与 gecoosac/（后端预编译二进制）两个子目录，
-# buildroot 递归扫描子目录 Makefile 即可注册 luci-app-gecoosac 与 gecoosac 两个包。
-# gecoosac/Makefile 通过 PROVIDES:=gecoosac-files gecoosac-common 满足前端全部依赖，
-# 无需额外包，也不会与官方 feeds 冲突（官方 packages 里没有 gecoosac）。
-if [ "$ADD_GECOOSAC" = "true" ]; then
-  if ! clone https://github.com/laipeng668/luci-app-gecoosac "$PKG_DIR/luci-app-gecoosac-src" main; then
-    echo "::error::luci-app-gecoosac 拉取失败，config 里的 =y 会被 defconfig 剔除"
+# --- VIKINGYFY/packages 源：homeproxy / sing-box / 集客AC（luci-app-gecoosac + gecoosac）---
+# 取代原先 laipeng668 的集客 clone：
+#   - luci-app-homeproxy（含自带 sing-box 内核依赖，LuCI 前端）
+#   - sing-box（内核，独立可装）
+#   - luci-app-gecoosac + gecoosac（集客AC控制器，后端为预编译二进制 ac_linux_arm64）
+# 该仓库为 monorepo，顶层各包独立成目录（luci-app-homeproxy/、sing-box/、luci-app-gecoosac/、gecoosac/）。
+# 整仓 clone 到临时目录后，把需要的子包提到 package/custom 顶层（与 airoha-npu 同级），
+# 由 prepare-tmpinfo 直接扫描 package/ 树索引进 tmp/.packageinfo，优先级高于 immortalwrt feeds，
+# 同名包（homeproxy / sing-box）自然覆盖 immortalwrt/luci、immortalwrt/packages 版本，
+# 达到「homeproxy / singbox / 集客 用这个源」的目的。
+if [ "$ADD_VIKING" = "true" ]; then
+  VIKING_URL="https://github.com/VIKINGYFY/packages"
+  VIKING_TMP="$(mktemp -d)/viking-packages"
+  if ! clone "$VIKING_URL" "$VIKING_TMP" main; then
+    echo "::error::VIKINGYFY/packages 拉取失败，homeproxy/gecoosac/sing-box 的 =y 会被 defconfig 剔除"
     exit 1
   fi
-  # 展平：该仓库根目录无 Makefile，前端包在 luci-app-gecoosac/ 子目录、后端包在 gecoosac/ 子目录。
-  # 若整仓留在同名目录 package/custom/luci-app-gecoosac/，会触发下方“清理重复嵌套目录”逻辑把前端
-  # 子目录误删（luci-app-gecoosac/luci-app-gecoosac 含 Makefile 被判为重复嵌套），导致包无法注册。
-  # 这里把两个子包提到 PKG_DIR 顶层，既避开误删、又满足 buildroot 递归扫描与 REQUIRED 顶层 Makefile 判定。
-  if [ -d "$PKG_DIR/luci-app-gecoosac-src/luci-app-gecoosac" ]; then
-    mv "$PKG_DIR/luci-app-gecoosac-src/luci-app-gecoosac" "$PKG_DIR/luci-app-gecoosac"
-  fi
-  if [ -d "$PKG_DIR/luci-app-gecoosac-src/gecoosac" ]; then
-    mv "$PKG_DIR/luci-app-gecoosac-src/gecoosac" "$PKG_DIR/gecoosac"
-  fi
-  # gecoosac/Makefile 的 Build/Prepare 用 ../LICENSE（相对包目录即 package/custom/LICENSE），
-  # 展平只搬了子目录，仓库根 LICENSE 需补到 PKG_DIR 顶层，否则 prepare 阶段 cp: cannot stat '../LICENSE'
-  [ -f "$PKG_DIR/luci-app-gecoosac-src/LICENSE" ] && cp -f "$PKG_DIR/luci-app-gecoosac-src/LICENSE" "$PKG_DIR/LICENSE"
-  rm -rf "$PKG_DIR/luci-app-gecoosac-src"
+  for p in luci-app-homeproxy luci-app-gecoosac gecoosac sing-box; do
+    if [ ! -d "$VIKING_TMP/$p" ]; then
+      echo "::error::VIKINGYFY/packages 缺少子包: $p"
+      exit 1
+    fi
+    rm -rf "$PKG_DIR/$p"
+    cp -r "$VIKING_TMP/$p" "$PKG_DIR/"
+    echo "✅ 已拷贝: $p  (版本 $(grep -m1 '^PKG_VERSION' "$PKG_DIR/$p/Makefile" 2>/dev/null | sed 's/PKG_VERSION:=//'))"
+  done
+  # gecoosac 后端 Makefile 的 PKG_LICENSE_FILES:=LICENSE 需要包目录有 LICENSE（license 收集阶段引用），
+  # 仓库根 LICENSE 补到 PKG_DIR 顶层（package/custom/LICENSE），供其引用。
+  [ -f "$VIKING_TMP/LICENSE" ] && cp -f "$VIKING_TMP/LICENSE" "$PKG_DIR/LICENSE"
+  rm -rf "$VIKING_TMP"
 fi
 
 # ---------------------------------------------------------
@@ -312,7 +318,7 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
   # 必装插件（config 里是 =y 的那几个）必须进索引，否则 defconfig 会静默剔除
   REQUIRED=""
   [ "$ADD_AIROHA_NPU" = "true" ] && REQUIRED="$REQUIRED luci-app-airoha-npu"
-  [ "$ADD_GECOOSAC" = "true" ] && REQUIRED="$REQUIRED luci-app-gecoosac"
+  [ "$ADD_VIKING" = "true" ] && REQUIRED="$REQUIRED luci-app-homeproxy luci-app-gecoosac gecoosac sing-box"
   if [ "$ADD_LUCI_APP" = "true" ]; then
     REQUIRED="$REQUIRED luci-app-natmode luci-app-pon-status"
   fi

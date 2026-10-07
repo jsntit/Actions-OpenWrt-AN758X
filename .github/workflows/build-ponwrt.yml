@@ -516,6 +516,17 @@ jobs:
             exit 1
           fi
 
+          # =========================================================
+          # 公共插件：对分支内所有设备（含 profile=all）统一生效，
+          # 不再局限于单机型 config。gecoosac 由 diy-part1.sh
+          # (ADD_GECOOSAC=true) 全局拉取；frpc/homeproxy/
+          # tailscale-community 来自标准 luci feed，此处统一勾选。
+          # =========================================================
+          if [ -e "$GITHUB_WORKSPACE/configs/common-apps.config" ]; then
+            cat "$GITHUB_WORKSPACE/configs/common-apps.config" >> .config
+            echo "✅ 已追加公共插件配置: configs/common-apps.config"
+          fi
+
       # =========================================================
       # 7. 按机型裁剪: 只保留一个 TARGET_DEVICE
       # =========================================================

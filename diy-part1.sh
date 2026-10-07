@@ -202,6 +202,9 @@ if [ "$ADD_GECOOSAC" = "true" ]; then
   if [ -d "$PKG_DIR/luci-app-gecoosac-src/gecoosac" ]; then
     mv "$PKG_DIR/luci-app-gecoosac-src/gecoosac" "$PKG_DIR/gecoosac"
   fi
+  # gecoosac/Makefile 的 Build/Prepare 用 ../LICENSE（相对包目录即 package/custom/LICENSE），
+  # 展平只搬了子目录，仓库根 LICENSE 需补到 PKG_DIR 顶层，否则 prepare 阶段 cp: cannot stat '../LICENSE'
+  [ -f "$PKG_DIR/luci-app-gecoosac-src/LICENSE" ] && cp -f "$PKG_DIR/luci-app-gecoosac-src/LICENSE" "$PKG_DIR/LICENSE"
   rm -rf "$PKG_DIR/luci-app-gecoosac-src"
 fi
 

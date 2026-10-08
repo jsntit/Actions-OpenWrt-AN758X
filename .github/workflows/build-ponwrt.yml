@@ -24,7 +24,7 @@ env:
   SOC: ${{ github.event.inputs.soc || 'an7581' }}
   PROFILE: ${{ github.event.inputs.profile || 'fiberhome_hg5585f-ct' }}
   BUILD_SCOPE: ${{ github.event.inputs.scope || 'firmware' }}
-  IGNORE_CACHE: ${{ github.event.inputs.ignore_cache || 'false' }}
+  IGNORE_CACHE: ${{ github.event.inputs.ignore_cache || 'true' }}
   # ---- NPU 固件（RISC-V 裸机固件，由工作流按机型现编或沿用仓库自带）----
   NPU_FW: ${{ github.event.inputs.npu_fw || 'stock' }}
   NPU_WIFI: ${{ github.event.inputs.npu_wifi || 'auto' }}

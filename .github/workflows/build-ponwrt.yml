@@ -340,8 +340,8 @@ jobs:
       # =========================================================
       # 3. dl 下载缓存
       # =========================================================
-      - name: Cache dl directory
-        if: env.USE_DL_CACHE == 'true' && env.IGNORE_CACHE != 'true'
+      - name: Cache dl directory (已禁用)
+        if: false  # 复用 dl 缓存会令 frp/sing-box 的 go-mod-cache 错位，改为每次全新下载；工具链缓存仍由 IGNORE_CACHE 控制
         uses: actions/cache@v5
         continue-on-error: true
         with:

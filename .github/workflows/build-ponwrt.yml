@@ -1234,17 +1234,3 @@ jobs:
           delete_tag_pattern: '^${{ env.DEVICE_NAME }}-'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  notify:
-    needs: build
-    runs-on: ubuntu-24.04
-    if: success()
-    steps:
-      - name: Notify Telegram on build success
-        if: ${{ secrets.TELEGRAM_BOT_TOKEN != '' }}
-        run: |
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage"             --data-urlencode "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}"             --data-urlencode "text=✅ PonWrt 编译成功
-仓库: ${{ github.repository }}
-分支: ${{ github.ref_name }}
-机型: ${{ github.event.inputs.profile }}
-运行: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

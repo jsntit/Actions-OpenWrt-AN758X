@@ -462,8 +462,11 @@ jobs:
 
           # 清理下载失败残留的小文件，否则解压时报 "does not look like a tar archive"
           echo "--- 清理损坏的下载包 ---"
-          find dl -size -1024c -type f -exec ls -l {} \; 2>/dev/null
-          find dl -size -1024c -type f -exec rm -f {} \; 2>/dev/null
+          # ⚠ 只清 dl/ 顶层，禁止递归：dl/go-mod-cache 里大量 Go 源文件小于 1KB
+          #   （lo/internal/rand、golib/clock、golib/errors、protobuf/internal/
+          #   editiondefaults 等），被删后目录变空，Go 会判定包不存在并报
+          #   "no required module provides package ..."。git 克隆目录同理不能碰。
+          find dl -maxdepth 1 -type f -size -1024c -print -exec rm -f {} \; 2>/dev/null
 
           echo "dl 目录共 $(ls -1 dl 2>/dev/null | wc -l) 个文件"
           ls -lh dl 2>/dev/null | head -20
@@ -692,8 +695,11 @@ jobs:
             sleep 5
           done
           # 清理下载失败残留的小文件
-          find dl -size -1024c -type f -exec ls -l {} \; 2>/dev/null
-          find dl -size -1024c -type f -exec rm -f {} \; 2>/dev/null
+          # ⚠ 只清 dl/ 顶层，禁止递归：dl/go-mod-cache 里大量 Go 源文件小于 1KB
+          #   （lo/internal/rand、golib/clock、golib/errors、protobuf/internal/
+          #   editiondefaults 等），被删后目录变空，Go 会判定包不存在并报
+          #   "no required module provides package ..."。git 克隆目录同理不能碰。
+          find dl -maxdepth 1 -type f -size -1024c -print -exec rm -f {} \; 2>/dev/null
           echo "dl 目录共 $(ls -1 dl 2>/dev/null | wc -l) 个文件"
 
       # =========================================================

@@ -734,6 +734,24 @@ jobs:
           echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> "$GITHUB_ENV"
 
       # =========================================================
+      # 构建完成后：把 Go 模块缓存排除出 dl 缓存
+      #      dl/go-mod-cache 的模块目录是只读的，且 Go 不会重新校验已解压的
+      #      模块内容 —— 一旦在打包/解包环节被破坏就无法自愈。故构建结束后
+      #      丢弃它，让下次构建重新下载模块，换取缓存永远干净。
+      # =========================================================
+      - name: Drop go-mod-cache from dl cache
+        if: always() && env.USE_DL_CACHE == 'true'
+        run: |
+          GMC="$BUILD_ROOT/openwrt/dl/go-mod-cache"
+          if [ -d "$GMC" ]; then
+            echo "丢弃前占用: $(du -sh "$GMC" 2>/dev/null | cut -f1)"
+            rm -rf "$GMC"
+            echo "✅ 已丢弃 dl/go-mod-cache，不再纳入 dl 缓存"
+          else
+            echo "dl/go-mod-cache 不存在，无需处理"
+          fi
+
+      # =========================================================
       # 19. 空间检查
       # =========================================================
       - name: Check space usage

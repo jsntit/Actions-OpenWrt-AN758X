@@ -22,7 +22,9 @@ mkdir -p "$PKG_DIR"
 # 见 files/sbin/tempinfo（概览页「温度」行：CPU / WiFi / PON 温度 + 光功率）
 # ---------------------------------------------------------
 ADD_AIROHA_NPU=true    # luci-app-airoha-npu：Airoha SoC 状态页（NPU/CPU/Frame Engine/PPE）
-
+ADD_FLUENT=true       # luci-theme-fluent：Fluent 2 风格主题
+ADD_FLUENT_LITE=false  # luci-theme-fluent-lite：轻量版（与 fluent 互斥，二选一）
+ADD_FLUENT_DASH=false  # luci-mod-fluentdashboard：可选状态概览卡片
 ADD_PASSWALL=false     # luci-app-passwall（含依赖源）
 ADD_OPENCLASH=false    # luci-app-openclash ⚠ 依赖 Ruby/Rust，编译极慢
 ADD_MOSDNS=false       # luci-app-mosdns + v2ray-geodata
@@ -30,6 +32,12 @@ ADD_LUCKY=false        # luci-app-lucky（DDNS + socat）
 ADD_TAILSCALE=false    # luci-app-tailscale
 ADD_OPENLIST=false     # luci-app-openlist2（alist/openlist 挂载）
 ADD_SMARTDNS=false     # luci-app-smartdns
+ADD_EASYTIER=false     # luci-app-easytier（另需 kmod-tun + easytier 本体，Rust 编译较慢）
+ADD_POWEROFF=false     # luci-app-poweroffdevice（关机）
+ADD_OWQ_WOL=false      # luci-app-owq-wol（网络唤醒，依赖 etherwake）
+ADD_WATCHDOG=false     # luci-app-watchdog（看门狗，包在子目录，需特殊处理）
+ADD_TASKPLAN=false     # luci-app-taskplan（定时任务）
+ADD_OAF=false          # luci-app-oaf（应用过滤，含内核模块，高风险）
 ADD_VIKING=true        # VIKINGYFY/packages 源：homeproxy / sing-box / 集客AC（luci-app-gecoosac）
 
 ADD_LUCI_APP=true       # qwe3017/luci-app 仓库（monorepo）
@@ -60,17 +68,6 @@ clone() {  # clone <url> <dir> [branch]
 #   luci-app/
 #   ├── luci-app-natmode/
 #   └── luci-app-pon-status/
-#
-# 所以需要 clone 整个仓库，再把子目录拷到 package/custom/。
-# 目录名必须等于包名（luci.mk: PKG_NAME ?= $(notdir ${CURDIR})），
-# 否则 config 里的 CONFIG_PACKAGE_xxx 符号对不上。
-#
-# ⚠️ 为什么不再用 CI 仓库自带的 packages/ 本地包：
-#    上游 natmode 0.1.2 修了一个关键问题 ——
-#    「LuCI 保存时 rpcd 暂存值 CLI 读不到」，导致点了保存但模式没应用
-#    （commit: fix(natmode): apply button missing on PonWrt LuCI fork）。
-#    修法是 apply 支持显式传参：apply <mode> [<fullcone6>] [<auto_offload>]
-#    本地旧版是从 UCI 读值，在保存流程中会读到旧值。
 # =========================================================
 if [ "$ADD_LUCI_APP" = "true" ]; then
   LUCI_APP_URL="https://github.com/qwe3017/luci-app"
@@ -176,10 +173,56 @@ if [ "$ADD_OPENLIST" = "true" ]; then
   clone https://github.com/sbwml/luci-app-openlist2 "$PKG_DIR/luci-app-openlist2" main
 fi
 
-# --- smartdns ---
 if [ "$ADD_SMARTDNS" = "true" ]; then
   clone https://github.com/pymumu/luci-app-smartdns "$PKG_DIR/luci-app-smartdns" master
   clone https://github.com/pymumu/smartdns "$PKG_DIR/smartdns" master
+fi
+# --- luci-theme-fluent ---
+# ⚠ 包在仓库的 package/ 子目录下，不能直接 clone 到 package/custom，
+#   必须把子目录拷出来，否则 buildroot 扫不到 Makefile
+if [ "$ADD_FLUENT" = "true" ] || [ "$ADD_FLUENT_LITE" = "true" ] || [ "$ADD_FLUENT_DASH" = "true" ]; then
+  FLUENT_TMP="$(mktemp -d)/fluent"
+  clone https://github.com/LazuliKao/luci-theme-fluent "$FLUENT_TMP" main
+
+  for p in luci-theme-fluent luci-theme-fluent-lite luci-mod-fluentdashboard; do
+    case "$p" in
+      luci-theme-fluent)        [ "$ADD_FLUENT" = "true" ] || continue ;;
+      luci-theme-fluent-lite)   [ "$ADD_FLUENT_LITE" = "true" ] || continue ;;
+      luci-mod-fluentdashboard) [ "$ADD_FLUENT_DASH" = "true" ] || continue ;;
+    esac
+    [ -d "$FLUENT_TMP/package/$p" ] || { echo "::error::$p 不存在"; continue; }
+    rm -rf "$PKG_DIR/$p"
+    cp -a "$FLUENT_TMP/package/$p" "$PKG_DIR/$p"
+    echo "✅ 已拷贝: $p"
+  done
+  rm -rf "$FLUENT_TMP"
+fi
+
+if [ "$ADD_EASYTIER" = "true" ]; then
+  clone https://github.com/EasyTier/luci-app-easytier "$PKG_DIR/luci-app-easytier" main
+fi
+if [ "$ADD_POWEROFF" = "true" ]; then
+  clone https://github.com/sirpdboy/luci-app-poweroffdevice "$PKG_DIR/luci-app-poweroffdevice" main
+fi
+if [ "$ADD_OWQ_WOL" = "true" ]; then
+  clone https://github.com/isalikai/luci-app-owq-wol "$PKG_DIR/luci-app-owq-wol" main
+fi
+if [ "$ADD_TASKPLAN" = "true" ]; then
+  clone https://github.com/sirpdboy/luci-app-taskplan "$PKG_DIR/luci-app-taskplan" main
+fi
+if [ "$ADD_WATCHDOG" = "true" ]; then   # 包在子目录，必须拷出子目录，不能整仓丢进去
+  WD_TMP="$(mktemp -d)/wd"
+  clone https://github.com/sirpdboy/luci-app-watchdog "$WD_TMP" main
+  rm -rf "$PKG_DIR/luci-app-watchdog"
+  cp -r "$WD_TMP/luci-app-watchdog" "$PKG_DIR/luci-app-watchdog"
+  rm -rf "$WD_TMP"
+fi
+if [ "$ADD_OAF" = "true" ]; then
+  clone https://github.com/destan19/OpenAppFilter "$PKG_DIR/OpenAppFilter" master
+  for p in luci-app-oaf open-app-filter oaf; do
+    cp -r "$PKG_DIR/OpenAppFilter/$p" "$PKG_DIR/" 2>/dev/null
+  done
+  rm -rf "$PKG_DIR/OpenAppFilter"
 fi
 
 # --- VIKINGYFY/packages 源：homeproxy / sing-box / 集客AC（luci-app-gecoosac + gecoosac）---

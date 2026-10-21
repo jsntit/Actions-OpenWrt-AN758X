@@ -42,7 +42,11 @@ ADD_LUCI_APP=true       # qwe3017/luci-app 仓库（monorepo）
                         #   └─ luci-app-pon-status  PON 光模块卡片（概览页「系统」下一格）
 # 下面这几个开关都能被环境变量覆盖（: ${VAR:=默认} 的写法）：
 # workflow 里选了「不拉私有仓库」时会注入 ADD_FTTR=false，整段直接跳过。
-: "${ADD_FTTR:=true}"       # FTTR 全家桶总开关（下面的子开关都受它管）★仅 HM2004-DU
+# ⚠ 这里默认关闭：openwrt-fttr 是私有仓库，没有 PRIVATE_REPO_TOKEN 时匿名
+#   clone 必然 404，而 diy 阶段拿不到包会 exit 1，整次构建直接失败。
+#   要启用：在仓库 Secrets 里配 PRIVATE_REPO_TOKEN（对该私有仓库有 Contents
+#   读权限），再把这里改成 true（或在 workflow 里显式传 ADD_FTTR=true）。
+: "${ADD_FTTR:=false}"      # FTTR 全家桶总开关（下面的子开关都受它管）★仅 HM2004-DU
 : "${ADD_FMCS:=true}"       # h3c-fmcs：Micro-OLT FPGA 内核驱动（kmod-h3c-fmcs）
 : "${ADD_FTTR_TOOLS:=true}" # h3c-fttr-tools：fttrd 控制器 + fttrctl（Rust 包）
 : "${ADD_FMCS_FW:=true}"    # h3c-fmcs-firmware：FPGA 比特流 FTTR_TOP.sbit

@@ -8,7 +8,8 @@ env:
   BUILD_ROOT: /workdir
   SOURCE: ${{ github.event.inputs.source || 'fork' }}
   # 唯一真相源：固件版本后缀的作者名（LuCI 概览页「固件版本」）
-  FW_AUTHOR: 'qwe'
+  # 由 fw_author 输入项覆盖，留空则 qwe
+  FW_AUTHOR: ${{ github.event.inputs.fw_author || 'qwe' }}
   REPO_URL: ${{ github.event.inputs.source == 'pbs05/ponwrt' && 'https://github.com/pbs05/ponwrt' || 'https://github.com/qwe3017/ponwrt' }}
   FEEDS_CONF: ''
   DIY_P1_SH: diy-part1.sh
@@ -27,6 +28,10 @@ env:
   IGNORE_CACHE: ${{ github.event.inputs.ignore_cache || 'false' }}
   FW_BUILD_TIME: ''                 # 留空 = 自动取构建时时间（Asia/Shanghai）
   FW_DESC_SUFFIX: ''               # 留空 = "· qwe · <构建时间>"；填了则完全自定义
+  # ---- 私有仓库（FTTR 三件套的来源，需凭证）----
+  # 填 none = 本次不拉私有仓库，FTTR 相关包整体跳过
+  PRIVATE_REPO: ${{ github.event.inputs.private_repo || 'qwe-qaq/openwrt-fttr' }}
+  PRIVATE_REPO_BRANCH: ${{ github.event.inputs.private_repo_branch || 'main' }}
 
 on:
   repository_dispatch:
@@ -100,6 +105,18 @@ on:
         options:
           - 'true'
           - 'false'
+      private_repo:
+        description: '拉取私有仓库（FTTR 三件套来源，需凭证）'
+        required: false
+        default: 'qwe-qaq/openwrt-fttr'
+        type: choice
+        options:
+          - qwe-qaq/openwrt-fttr
+          - none
+      private_repo_branch:
+        description: '私有仓库分支'
+        required: false
+        default: 'main'
       ssh:
         description: 'SSH connection to Actions (仅 main 分支、仓库所有者可触发)'
         required: false
@@ -124,6 +141,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          # 不持久化凭据：checkout 会把 http.https://github.com/.extraheader
+          # 写进【本地】.git/config，那个头带的是仅本仓库权限的 GITHUB_TOKEN，
+          # 会盖掉凭证步骤注入的 PAT，导致私有仓库 404（本流程无 git push，
+          # 后续只用 gh CLI + env 里的 GITHUB_TOKEN，不需要 git 持久化凭据）
+          persist-credentials: false
 
       # =========================================================
       # 0. 解析机型 -> 自动校正 SoC，导出 device name
@@ -232,6 +255,81 @@ jobs:
           echo "FW_AUTHOR=${FW_AUTHOR:-qwe}" >> "$GITHUB_ENV"
 
           cd openwrt && echo "commit: $(git rev-parse --short HEAD)"
+
+      # =========================================================
+      # 2.5 仓库凭证（openwrt-fttr feed 的来源）
+      #
+      # 流程：先试匿名访问 —— 万一哪天仓库转公开就零凭证直接过；
+      # qwe-qaq/openwrt-fttr 当前是私有仓库，匿名必然被拒，随后用
+      # git insteadOf 注入 Secret 里的 PAT，diy-part1.sh 的 clone URL
+      # 保持原样，token 既不会出现在命令行，也不会被 echo 进日志
+      # （另有 add-mask 双保险）。
+      #
+      # 凭证来源：secrets.PRIVATE_REPO_TOKEN > secrets.FTTR_TOKEN（旧名兼容）
+      # ⚠ workflow_dispatch 的输入值会明文出现在 run 页面、也能被 API 读到，
+      #   所以不设令牌输入框，长期凭证只放 Secret，换令牌=更新 Secret 后重跑。
+      # =========================================================
+      - name: Setup private repo credentials
+        id: private_repo
+        env:
+          SEC_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          SEC_TOKEN_LEGACY: ${{ secrets.FTTR_TOKEN }}
+        run: |
+          # 本次不拉私有仓库：关掉 FTTR 全家桶（开关支持环境变量覆盖）
+          if [ "${PRIVATE_REPO}" = "none" ]; then
+            echo "ADD_FTTR=false" >> "$GITHUB_ENV"
+            echo "⚠ PRIVATE_REPO=none —— 跳过私有仓库，kmod-h3c-fmcs / h3c-fttr-tools / h3c-fmcs-firmware / luci-app-fttr 都不会编进固件"
+            exit 0
+          fi
+
+          BASE_URL="https://github.com/${PRIVATE_REPO}"
+          # 日志脱敏：URL 里的 user:token@ 一律替换成 ***@
+          sanitize() { sed -E 's#://[^@/]+@#://***@#g'; }
+
+          # 1) 先试匿名：公开仓库不需要任何凭证
+          if ERR=$(git ls-remote --exit-code --heads "$BASE_URL" \
+                     "refs/heads/${PRIVATE_REPO_BRANCH}" 2>&1); then
+            echo "✅ ${BASE_URL} 可匿名访问（公开仓库），无需凭证"
+            exit 0
+          fi
+
+          # 2) 匿名被拒才要令牌（只从 Secret 取）
+          TOKEN="${SEC_TOKEN:-${SEC_TOKEN_LEGACY}}"
+          if [ -z "$TOKEN" ]; then
+            echo "::error::仓库 ${PRIVATE_REPO} 匿名访问被拒且 Secret 里没有可用凭证：请在仓库 Settings → Secrets and variables → Actions → Repository secrets 添加 PRIVATE_REPO_TOKEN（PAT 需对该仓库有 Contents 读权限）"
+            echo "--- git 原始错误 ---"
+            printf '%s\n' "$ERR" | sanitize
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+
+          # checkout 注入的 github.com 通用 Authorization 头会盖掉我们的 PAT，先清掉
+          # ⚠ checkout 写的是【本地】.git/config（见 actions/checkout 源码
+          #   git-auth-helper.ts configureToken 默认 configPath=.git/config），
+          #   本地配置优先级高于全局，只 unset --global 根本清不掉！
+          #   2026-10-20 实测：只清全局时带令牌仍 404 Repository not found。
+          #   persist-credentials: false 已让 checkout 不再写，这里双保险。
+          git config --global --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+          git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+
+          # 只给这一条 URL 注入凭证，其它 clone 不受影响
+          for suffix in "" ".git"; do
+            git config --global \
+              "url.https://x-access-token:${TOKEN}@github.com/${PRIVATE_REPO}${suffix}.insteadOf" \
+              "$BASE_URL${suffix}"
+          done
+
+          # 3) 带凭证复检：失败时打印脱敏后的真实错误，别只给一句黑盒提示
+          if ERR=$(git ls-remote --exit-code --heads "$BASE_URL" \
+                     "refs/heads/${PRIVATE_REPO_BRANCH}" 2>&1); then
+            echo "✅ 凭证已注入并验证通过：${BASE_URL} (分支 ${PRIVATE_REPO_BRANCH})"
+          else
+            echo "::error::仓库 ${PRIVATE_REPO} 的分支 ${PRIVATE_REPO_BRANCH} 带凭证访问失败"
+            echo "--- git 原始错误（已脱敏）---"
+            printf '%s\n' "$ERR" | sanitize
+            echo "常见原因：PAT 无效/已吊销、对该仓库无读权限（fine-grained 必须 Repository access 选中该仓库且 Permissions → Contents: Read-only，只勾默认的 Metadata 读不了 git；个人账号没有 SSO 这回事，只有组织仓库且组织开了 SAML SSO 才需要授权 PAT）、分支名不正确、令牌带入多余字符（空格/换行）"
+            exit 1
+          fi
 
       # =========================================================
       # 3. dl 下载缓存
@@ -675,11 +773,13 @@ jobs:
       # =========================================================
       - name: SSH connection to Actions
         uses: mxschmitt/action-tmate@v3
+        # 原条件 contains(github.event.action, 'ssh') 对 workflow_dispatch 永假
+        # （event.action 恒为 "workflow_dispatch"），叠加 ref==refs/heads/main
+        # （本 workflow 在 FTTR 分支运行）后，ssh=true 从来不会触发。
+        # 保留 owner 校验：调试入口只对仓库所有者开放。
         if: >-
-          (github.event.inputs.ssh == 'true' && github.event.inputs.ssh != 'false')
-          && github.ref == 'refs/heads/main'
+          github.event.inputs.ssh == 'true'
           && github.actor == github.repository_owner
-          && contains(github.event.action, 'ssh')
 
       # =========================================================
       # 17. 下载软件包（defconfig 已在步骤 9 执行，此处不再重复）

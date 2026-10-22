@@ -37,7 +37,7 @@ ADD_TASKPLAN=false     # luci-app-taskplan（定时任务）
 ADD_OAF=false          # luci-app-oaf（应用过滤，含内核模块，高风险）
 ADD_GECOOSAC=true      # luci-app-gecoosac（集客AC控制器，第三方仓库 laipeng668）
 
-ADD_LUCI_APP=true       # qwe3017/luci-app 仓库（monorepo）
+ADD_LUCI_APP=true       # qwe-qaq/luci-app 仓库（monorepo）
                         #   ├─ luci-app-natmode     NAT 类型三选一（网络 → NAT 类型）
                         #   └─ luci-app-pon-status  PON 光模块卡片（概览页「系统」下一格）
 # 下面这几个开关都能被环境变量覆盖（: ${VAR:=默认} 的写法）：
@@ -83,7 +83,7 @@ clone() {  # clone <url> <dir> [branch]
 #   └── luci-app-pon-status/
 # =========================================================
 if [ "$ADD_LUCI_APP" = "true" ]; then
-  LUCI_APP_URL="https://github.com/qwe3017/luci-app"
+  LUCI_APP_URL="https://github.com/qwe-qaq/luci-app"
   LUCI_APP_TMP="$(mktemp -d)/luci-app"
   if ! clone "$LUCI_APP_URL" "$LUCI_APP_TMP" main; then
     echo "::error::qwe3017/luci-app 拉取失败，natmode / pon-status 会被 defconfig 剔除"
@@ -105,8 +105,10 @@ fi
 # h3c-fmcs / h3c-fttr-tools / h3c-fmcs-firmware —— FTTR 后端三件套 ★HM2004-DU 专属
 #
 # 源：qwe-qaq/openwrt-fttr（私有仓库）
-#   凭证由 workflow 用 git insteadOf 注入（见 build-ponwrt.yml 的
-#   Setup private repo credentials 步骤），所以这里照旧用「裸 URL」——
+#   凭证由 workflow 用 GIT_ASKPASS 注入（见 build-ponwrt.yml 的
+#   Create private source token / Prepare private Git authentication /
+#   Setup private repo credentials 三步）：git 被要求认证时才回调
+#   scripts/git_askpass.sh 取令牌，所以这里照旧用「裸 URL」——
 #   千万别在这里拼 token，clone 的 echo 会把它打进日志。
 #   ⚠ 这个仓库是 feed 形态：根目录直接就是三个包目录，没有 package/ 子目录，
 #     也没有顶层 Makefile。所以按目录名直接拷进 package/custom/ 即可 ——
@@ -134,7 +136,7 @@ if [ "$ADD_FTTR" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
   FTTR_FEED_TMP="$(mktemp -d)/openwrt-fttr"
   if ! clone "$FTTR_FEED_URL" "$FTTR_FEED_TMP" "$FTTR_FEED_BRANCH"; then
     echo "::error::openwrt-fttr 拉取失败：${FTTR_REPO} (分支 ${FTTR_BRANCH})，kmod-h3c-fmcs / h3c-fttr-tools / h3c-fmcs-firmware 会被 defconfig 剔除"
-    echo "        公开仓库失败=仓库/分支名不对；私有仓库缺凭证=检查仓库 Secret PRIVATE_REPO_TOKEN 是否有效（PAT 需对该仓库有 Contents 读权限）"
+    echo "        公开仓库失败=仓库/分支名不对；私有仓库缺凭证=优先查 GitHub App（PRIVATE_SOURCE_APP_ID / PRIVATE_SOURCE_APP_PRIVATE_KEY，App 要装到该仓库且 Contents: Read-only），回退才看 Secret PRIVATE_REPO_TOKEN 是否有效（PAT 需对该仓库有 Contents 读权限）"
     exit 1
   fi
 

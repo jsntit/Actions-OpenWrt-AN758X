@@ -20,6 +20,8 @@ on:
 env:
   PRIVATE_REPO: ${{ github.event.inputs.private_repo || 'qwe-qaq/openwrt-fttr' }}
   PRIVATE_REPO_BRANCH: ${{ github.event.inputs.private_repo_branch || 'main' }}
+  FTTR_LUCI_REPO: ${{ github.event.inputs.fttr_luci_repo || 'qwe-qaq/luci-app-fttr' }}
+  FTTR_LUCI_BRANCH: ${{ github.event.inputs.fttr_luci_branch || 'main' }}
 
 # 最小权限：只需要 checkout 本仓库
 permissions:
@@ -29,6 +31,10 @@ jobs:
   test-pull:
     name: 私有仓库拉取测试
     runs-on: ubuntu-24.04
+    # 同上：secrets 不能进 step 级 if，先在 job 级 env 里算成布尔标志
+    env:
+      HAS_APP_CREDS: ${{ secrets.PRIVATE_SOURCE_APP_ID != '' && secrets.PRIVATE_SOURCE_APP_PRIVATE_KEY != '' }}
+      HAS_PAT: ${{ secrets.PRIVATE_REPO_TOKEN != '' || secrets.FTTR_TOKEN != '' }}
     steps:
       # 复现真实环境：checkout 会写入 http.https://github.com/.extraheader，
       # 必须验证凭证步骤能正确清掉它，否则它会盖掉 insteadOf 注入的 PAT
@@ -41,15 +47,81 @@ jobs:
           persist-credentials: false
 
       # =========================================================
+      # GitHub App 安装令牌（与 build-ponwrt.yml 同源同配置）
+      # 1 小时有效、仅限白名单仓库、contents 只读、job 结束自动吊销；
+      # 配不出来才回退到 Secret 里的 PAT。
+      # =========================================================
+      # 先探测后取凭证：两个仓库全公开就一个令牌都不申请
+      - name: Probe FTTR repos visibility
+        id: probe
+        if: ${{ env.PRIVATE_REPO != 'none' }}
+        run: |
+          probe() {  # stdout: public|private；人读提示走 stderr
+            local repo="$1" br="$2"
+            if git ls-remote --exit-code --heads "https://github.com/${repo}" \
+                 "refs/heads/${br}" >/dev/null 2>&1; then
+              echo "  ✅ ${repo} (分支 ${br}) —— 公开，匿名可读" >&2
+              echo "public"
+            else
+              echo "  🔒 ${repo} (分支 ${br}) —— 匿名不可读，需要凭证" >&2
+              echo "private"
+            fi
+          }
+          echo "=== FTTR 仓库可见性探测（匿名）==="
+          R1=$(probe "${PRIVATE_REPO}" "${PRIVATE_REPO_BRANCH}")
+          R2=$(probe "${FTTR_LUCI_REPO}" "${FTTR_LUCI_BRANCH}")
+          NEED=false
+          [ "$R1" = "private" ] || [ "$R2" = "private" ] && NEED=true
+          echo "need_token=$NEED" >> "$GITHUB_OUTPUT"
+          echo "backend=$R1" >> "$GITHUB_OUTPUT"
+          echo "luci=$R2" >> "$GITHUB_OUTPUT"
+
+          # 只把私有仓库放进令牌白名单：混进公开但未安装的仓库会 422
+          TOKEN_REPOS=""
+          add_repo() {
+            [ "$1" = "private" ] || return 0
+            local name="${2#*/}"
+            if [ -z "$TOKEN_REPOS" ]; then TOKEN_REPOS="$name"; else TOKEN_REPOS="$TOKEN_REPOS,$name"; fi
+          }
+          add_repo "$R1" "${PRIVATE_REPO}"
+          add_repo "$R2" "${FTTR_LUCI_REPO}"
+          echo "token_repos=$TOKEN_REPOS" >> "$GITHUB_OUTPUT"
+          echo "  令牌白名单（仅私有仓库）：${TOKEN_REPOS:-（空）}"
+          echo "结论：$( [ "$NEED" = true ] && echo '至少一个需要凭证 → 申请 App 令牌' || echo '全部公开 → 跳过取凭证' )"
+
+      - name: Create private source token
+        id: private-source-token
+        # 没配 App 凭证就跳过（否则 action 抛 Input required and not supplied: app-id）
+        if: ${{ steps.probe.outputs.need_token == 'true' && env.HAS_APP_CREDS == 'true' }}
+        # 拿不到令牌不炸 job：交给 Setup 步骤回退 PAT
+        continue-on-error: true
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.PRIVATE_SOURCE_APP_ID }}
+          private-key: ${{ secrets.PRIVATE_SOURCE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-contents: read
+          repositories: ${{ steps.probe.outputs.token_repos }}
+
+      - name: Prepare private Git authentication
+        if: ${{ steps.probe.outputs.need_token == 'true' && (env.HAS_APP_CREDS == 'true' || env.HAS_PAT == 'true') }}
+        run: |
+          install -m 700 "$GITHUB_WORKSPACE/scripts/git_askpass.sh" "$RUNNER_TEMP/git-askpass"
+          echo "GIT_ASKPASS=$RUNNER_TEMP/git-askpass" >> "$GITHUB_ENV"
+          echo "GIT_TERMINAL_PROMPT=0" >> "$GITHUB_ENV"
+
+      # =========================================================
       # 预检：把「令牌有没有效」和「配置有没有被污染」分开定位，
       # 失败时不用猜。纯信息展示，不拦截流程
       # =========================================================
       - name: Pre-flight diagnostics
         env:
+          APP_TOKEN: ${{ steps.private-source-token.outputs.token }}
           SEC_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
           SEC_TOKEN_LEGACY: ${{ secrets.FTTR_TOKEN }}
         run: |
-          TOKEN="${SEC_TOKEN:-${SEC_TOKEN_LEGACY}}"
+          TOKEN="${APP_TOKEN:-${SEC_TOKEN:-${SEC_TOKEN_LEGACY}}}"
+          echo "  App 凭证已配置: ${HAS_APP_CREDS}    PAT 已配置: ${HAS_PAT}"
 
           echo "=== 1. extraheader 残留检查（只报存在性，不打印内容）==="
           for scope in global local; do
@@ -62,7 +134,7 @@ jobs:
 
           if [ -z "$TOKEN" ]; then
             echo
-            echo "=== 2. Secret 里没有令牌（PRIVATE_REPO_TOKEN / FTTR_TOKEN 均为空）==="
+            echo "=== 2. 没有可用令牌（GitHub App / PRIVATE_REPO_TOKEN / FTTR_TOKEN 均为空）==="
             exit 0
           fi
 
@@ -70,7 +142,8 @@ jobs:
           echo "=== 2. 令牌身份与仓库访问权限（GitHub API，不打印令牌）==="
           LOGIN=$(curl -s -H "Authorization: Bearer $TOKEN" https://api.github.com/user \
                     | grep -m1 '"login"' | sed -E 's/.*"login": *"([^"]+)".*/\1/')
-          echo "  令牌归属: ${LOGIN:-无法解析（令牌可能无效/已吊销）}"
+          # App 安装令牌没有「用户身份」，/user 取不到是正常现象，不是失效
+          echo "  令牌归属: ${LOGIN:-（无 /user 身份 —— App 安装令牌的正常表现）}"
           CODE=$(curl -s -o /dev/null -w "%{http_code}" \
                    -H "Authorization: Bearer $TOKEN" \
                    "https://api.github.com/repos/${PRIVATE_REPO}")
@@ -87,6 +160,7 @@ jobs:
       # =========================================================
       - name: Setup private repo credentials
         env:
+          APP_TOKEN: ${{ steps.private-source-token.outputs.token }}
           SEC_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
           SEC_TOKEN_LEGACY: ${{ secrets.FTTR_TOKEN }}
         run: |
@@ -95,26 +169,43 @@ jobs:
             exit 0
           fi
 
+          # 探测已认定两个仓库都能匿名读 → 一个凭证都不注入
+          if [ "${{ steps.probe.outputs.need_token }}" != "true" ]; then
+            echo "✅ 探测结论：${PRIVATE_REPO} / ${FTTR_LUCI_REPO} 均可匿名访问（公开仓库），不注入任何凭证"
+            exit 0
+          fi
+
           BASE_URL="https://github.com/${PRIVATE_REPO}"
           # 日志脱敏：URL 里的 user:token@ 一律替换成 ***@
           sanitize() { sed -E 's#://[^@/]+@#://***@#g'; }
 
           # 1) 先试匿名：公开仓库不需要任何凭证
-          if ERR=$(git ls-remote --exit-code --heads "$BASE_URL" \
+          if ERR=$(env -u GIT_ASKPASS git ls-remote --exit-code --heads "$BASE_URL" \
                      "refs/heads/${PRIVATE_REPO_BRANCH}" 2>&1); then
             echo "✅ ${BASE_URL} 可匿名访问（公开仓库），无需凭证"
             exit 0
           fi
 
-          # 2) 匿名被拒才要令牌（只从 Secret 取）
-          TOKEN="${SEC_TOKEN:-${SEC_TOKEN_LEGACY}}"
+          # 2) 匿名被拒才要令牌：App 安装令牌 > Secret 里的 PAT
+          if [ -n "${APP_TOKEN}" ]; then
+            TOKEN="${APP_TOKEN}"; SRC="GitHub App 安装令牌"
+          elif [ -n "${SEC_TOKEN}" ]; then
+            TOKEN="${SEC_TOKEN}"; SRC="Secret PRIVATE_REPO_TOKEN"
+          elif [ -n "${SEC_TOKEN_LEGACY}" ]; then
+            TOKEN="${SEC_TOKEN_LEGACY}"; SRC="Secret FTTR_TOKEN（旧名）"
+          else
+            TOKEN=""
+          fi
           if [ -z "$TOKEN" ]; then
-            echo "::error::仓库 ${PRIVATE_REPO} 匿名访问被拒且 Secret 里没有可用凭证：请在仓库 Settings → Secrets and variables → Actions → Repository secrets 添加 PRIVATE_REPO_TOKEN（PAT 需对该仓库有 Contents 读权限）"
+            echo "::error::仓库 ${PRIVATE_REPO} 匿名访问被拒且没有可用凭证。"
+            echo "        推荐：Secrets 配 PRIVATE_SOURCE_APP_ID + PRIVATE_SOURCE_APP_PRIVATE_KEY（GitHub App 装到 ${PRIVATE_REPO}，Contents: Read-only）"
+            echo "        回退：Secrets 配 PRIVATE_REPO_TOKEN（PAT，需对该仓库有 Contents 读权限）"
             echo "--- git 原始错误 ---"
             printf '%s\n' "$ERR" | sanitize
             exit 1
           fi
           echo "::add-mask::$TOKEN"
+          echo "ℹ 凭证来源：$SRC"
 
           # checkout 注入的 github.com 通用 Authorization 头会盖掉我们的 PAT，先清掉
           # ⚠ checkout 写的是【本地】.git/config（见 actions/checkout 源码
@@ -124,12 +215,26 @@ jobs:
           git config --global --unset-all http.https://github.com/.extraheader 2>/dev/null || true
           git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
 
-          # 只给这一条 URL 注入凭证，其它 clone 不受影响
-          for suffix in "" ".git"; do
-            git config --global \
-              "url.https://x-access-token:${TOKEN}@github.com/${PRIVATE_REPO}${suffix}.insteadOf" \
-              "$BASE_URL${suffix}"
-          done
+          # 令牌写给 askpass 读：不进 git config、不进后续步骤的 env。
+          # 公开仓库 clone 不会触发 askpass，只有真正要认证的远端才会回调。
+          TOKEN_FILE="$RUNNER_TEMP/gh_token"
+          printf '%s' "$TOKEN" > "$TOKEN_FILE"
+          chmod 600 "$TOKEN_FILE"
+
+          # ⚠ 写 $GITHUB_ENV 只对【后续步骤】生效，本步骤当前进程看不见。
+          #   下面紧跟的复检就跑在本步骤里，必须同时 export，否则 askpass
+          #   读到空的 GH_TOKEN_FILE → "unable to read askpass response"。
+          export GH_TOKEN_FILE="$TOKEN_FILE"
+          export GIT_ASKPASS="${GIT_ASKPASS:-$RUNNER_TEMP/git-askpass}"
+          echo "GH_TOKEN_FILE=$TOKEN_FILE" >> "$GITHUB_ENV"
+
+          # 自检：直接问一次 askpass，拿不到令牌就别往下跑（省得git 报黑盒错误）
+          if ! ASK=$(GIT_ASKPASS="$GIT_ASKPASS" "$GIT_ASKPASS" "Password for 'https://github.com':" 2>/dev/null) \
+               || [ -z "$ASK" ]; then
+            echo "::error::askpass 自检失败：拿不到令牌（令牌文件为空？askpass 脚本没可执行位？）"
+            exit 1
+          fi
+          echo "  askpass 自检通过（令牌长度 ${#ASK}，值不打印）"
 
           # 3) 带凭证复检：失败时打印脱敏后的真实错误，别只给一句黑盒提示
           if ERR=$(git ls-remote --exit-code --heads "$BASE_URL" \
@@ -139,7 +244,15 @@ jobs:
             echo "::error::仓库 ${PRIVATE_REPO} 的分支 ${PRIVATE_REPO_BRANCH} 带凭证访问失败"
             echo "--- git 原始错误（已脱敏）---"
             printf '%s\n' "$ERR" | sanitize
-            echo "常见原因：PAT 无效/已吊销、对该仓库无读权限（fine-grained 必须 Repository access 选中该仓库且 Permissions → Contents: Read-only，只勾默认的 Metadata 读不了 git；个人账号没有 SSO 这回事，只有组织仓库且组织开了 SAML SSO 才需要授权 PAT）、分支名不正确"
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" \
+                     "https://api.github.com/repos/${PRIVATE_REPO}")
+            echo "--- API /repos/${PRIVATE_REPO} → HTTP $CODE ---"
+            case "$CODE" in
+              200) echo "ℹ API 可见但 git 取不到：多半是分支 ${PRIVATE_REPO_BRANCH} 不存在" ;;
+              404) echo "ℹ 404：App 没安装到 ${PRIVATE_REPO}（或 repositories 白名单漏了）；走 PAT 则是 Repository access 没选中该仓库 / 只勾了默认的 Metadata（读不了 git）" ;;
+              401) echo "ℹ 401：令牌无效或已过期（App 安装令牌只有 1 小时，不跨 job 复用）" ;;
+            esac
+
             exit 1
           fi
 

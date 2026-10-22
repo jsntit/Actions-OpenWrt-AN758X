@@ -165,7 +165,11 @@ on:
       private_repo:
         description: '拉取私有仓库（FTTR 三件套来源，需凭证）'
         required: false
-        default: 'qwe-qaq/openwrt-fttr'
+        # 默认 none：qwe-qaq/openwrt-fttr 是私有仓库，本 fork 无读权限时探测必然
+        # 404、无令牌可用，Setup private repo credentials 会 exit 1，整次构建在
+        # 编译前就失败。默认 none 可让构建无痛跳过 FTTR。
+        # 拿到 collaborator 权限后，在下拉里手动选回 qwe-qaq/openwrt-fttr 即可。
+        default: 'none'      # 原为 'qwe-qaq/openwrt-fttr'
         type: choice
         options:
           - qwe-qaq/openwrt-fttr

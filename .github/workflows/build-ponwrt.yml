@@ -642,8 +642,9 @@ jobs:
           # =========================================================
           # 公共插件：对分支内所有设备（含 profile=all）统一生效，
           # 不再局限于单机型 config。gecoosac 由 diy-part1.sh
-          # (ADD_GECOOSAC=true) 全局拉取；frpc/homeproxy/
-          # tailscale-community 来自标准 luci feed，此处统一勾选。
+          # (ADD_GECOOSAC=true) 全局拉取；frpc 来自标准 luci feed，
+          # 此处统一勾选。homeproxy / sing-box / tailscale 已移除，
+          # 由本文件显式 is not set 兜底排除。
           # =========================================================
           if [ -e "$GITHUB_WORKSPACE/configs/common-apps.config" ]; then
             cat "$GITHUB_WORKSPACE/configs/common-apps.config" >> .config

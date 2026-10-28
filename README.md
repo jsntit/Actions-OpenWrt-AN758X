@@ -1,5 +1,11 @@
 # PonWrt CI — Airoha AN758x PON 云编译
 
+> **当前分支：`add-proxy-apps`** —— 在上游主线基础上加了代理插件链与自用定制。
+> 本分支相对 `main`（= 上游）的全部改动、每处改动的理由、以及怎么同步上游，
+> 见 **[BRANCH-add-proxy-apps.md](BRANCH-add-proxy-apps.md)**。
+>
+> 想要纯净的上游行为，请用 `main` 分支。
+
 基于 P3TERX `Actions-OpenWrt` 模板重构，源码指向 [pbs05/ponwrt](https://github.com/pbs05/ponwrt)（默认分支 `master`）。
 产出 AN7581 / AN7583 PON 光猫的 OpenWrt 固件，带机型选择、磁盘释放和滚动构建缓存。
 
@@ -45,16 +51,21 @@
 | AN7581 | `fiberhome_hg5382a` `fiberhome_hg5585f-ct` `fiberhome_hg5585f-cu` `gemtek_xg2010g` `nokia_xg-040g-md-ubi` `nokia_xg-040g-tf-ubi` `unionman_ung00a` `znxt_zn504xg-d` `znxt_zn515xg-d` `h3c_hm2004-du`※ |
 | AN7583 | `nokia_xg-040g-mf` `nokia_xg-040g-mf-ubi` |
 
-※ `h3c_hm2004-du` 额外依赖私有仓库 `openwrt-fttr`（FTTR 驱动 / 控制端 / FPGA 固件）与 `luci-app-fttr`，缺凭证时 `diy-part1.sh` 会直接报错退出。
+※ `h3c_hm2004-du` 上游默认依赖私有仓库 `openwrt-fttr`（FTTR 驱动 / 控制端 / FPGA 固件）。
+**本分支已把它整段关闭**（`ADD_FTTR` 默认 `false`、`private_repo` 默认 `none`），
+所以该机型可以直接编译，只是固件里没有 FTTR 下行功能。要重新启用见
+[BRANCH-add-proxy-apps.md](BRANCH-add-proxy-apps.md)（「二、config 改动 → 3. 关闭 FTTR 下行」一节）。
 
 ## 插件开关（`diy-part1.sh`）
 
 **默认开启**：`ADD_AIROHA_NPU`（`luci-app-airoha-npu`，NPU 卸载 / CPU 频率 / Frame Engine / PPE 流表）、`ADD_LUCI_APP`（`luci-app-natmode` NAT 类型三选一 + `luci-app-pon-status` 光模块表格）。
 
-`ADD_FTTR` 及其子开关只在 `h3c_hm2004-du` 下生效，其余机型自动跳过。
+> **本分支的差异**：`ADD_FLUENT=true`（Fluent 2 主题）、新增 `ADD_GECOOSAC=true`（集客 AC 控制器）、
+> `ADD_FTTR=false`（关闭 FTTR 下行）。详见 [BRANCH-add-proxy-apps.md](BRANCH-add-proxy-apps.md)。
 
-**默认关闭**：passwall / openclash / mosdns / lucky / tailscale / openlist / smartdns / easytier / wol / watchdog / taskplan / oaf / fluent 主题。
-要用哪个，改两处：脚本里对应 `ADD_xxx=true`，**并且**在 `configs/<机型>.config` 里把 `CONFIG_PACKAGE_xxx` 改成 `=y`。只改一处等于「拉下来了但没编进去」。
+`ADD_FTTR` 及其子开关只在 `h3c_hm2004-du` 下生效，其余机型自动跳过。**本分支默认 `false`**。
+
+**默认关闭**：passwall / openclash / mosdns / lucky / tailscale / openlist / smartdns / easytier / wol / watchdog / taskplan / oaf。要用哪个，改两处：脚本里对应 `ADD_xxx=true`，**并且**在 `configs/<机型>.config` 里把 `CONFIG_PACKAGE_xxx` 改成 `=y`。只改一处等于「拉下来了但没编进去」。
 
 > `ADD_SMARTDNS` / `ADD_PASSWALL` 拉的是与 feeds 同名的包（`pymumu/smartdns`、passwall 系列），
 > 同时打开会出现两份同名包，最终用哪份取决于扫描顺序——已经在 config 里打开这些包时优先用 feeds 的。

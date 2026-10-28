@@ -19,7 +19,7 @@ mkdir -p "$PKG_DIR"
 # 见 files/sbin/tempinfo（概览页「温度」行：CPU / WiFi / PON 温度 + 光功率）
 # ---------------------------------------------------------
 ADD_AIROHA_NPU=true    # luci-app-airoha-npu：Airoha SoC 状态页（NPU/CPU/Frame Engine/PPE）
-ADD_FLUENT=false        # luci-theme-fluent：Fluent 2 风格主题
+ADD_FLUENT=true       # luci-theme-fluent：Fluent 2 风格主题
 ADD_FLUENT_LITE=false  # luci-theme-fluent-lite：轻量版（与 fluent 互斥，二选一）
 ADD_FLUENT_DASH=false  # luci-mod-fluentdashboard：可选状态概览卡片
 ADD_PASSWALL=false      # luci-app-passwall（含依赖源）
@@ -35,12 +35,18 @@ ADD_OWQ_WOL=false       # luci-app-owq-wol（网络唤醒，依赖 etherwake）
 ADD_WATCHDOG=false      # luci-app-watchdog（看门狗，包在子目录，需特殊处理）
 ADD_TASKPLAN=false      # luci-app-taskplan（定时任务）
 ADD_OAF=false           # luci-app-oaf（应用过滤，含内核模块，高风险）
+ADD_GECOOSAC=true      # luci-app-gecoosac（集客AC控制器，第三方仓库 laipeng668）
+
 ADD_LUCI_APP=true       # qwe-qaq/luci-app 仓库（monorepo）
                         #   ├─ luci-app-natmode     NAT 类型三选一（网络 → NAT 类型）
                         #   └─ luci-app-pon-status  PON 光模块卡片（概览页「系统」下一格）
 # 下面这几个开关都能被环境变量覆盖（: ${VAR:=默认} 的写法）：
 # workflow 里选了「不拉私有仓库」时会注入 ADD_FTTR=false，整段直接跳过。
-: "${ADD_FTTR:=true}"       # FTTR 全家桶总开关（下面的子开关都受它管）★仅 HM2004-DU
+# ⚠ 这里默认关闭：openwrt-fttr 是私有仓库，没有 PRIVATE_REPO_TOKEN 时匿名
+#   clone 必然 404，而 diy 阶段拿不到包会 exit 1，整次构建直接失败。
+#   要启用：在仓库 Secrets 里配 PRIVATE_REPO_TOKEN（对该私有仓库有 Contents
+#   读权限），再把这里改成 true（或在 workflow 里显式传 ADD_FTTR=true）。
+: "${ADD_FTTR:=false}"      # FTTR 全家桶总开关（下面的子开关都受它管）★仅 HM2004-DU
 : "${ADD_FMCS:=true}"       # h3c-fmcs：Micro-OLT FPGA 内核驱动（kmod-h3c-fmcs）
 : "${ADD_FTTR_TOOLS:=true}" # h3c-fttr-tools：fttrd 控制器 + fttrctl（Rust 包）
 : "${ADD_FMCS_FW:=true}"    # h3c-fmcs-firmware：FPGA 比特流 FTTR_TOP.sbit
@@ -301,6 +307,32 @@ if [ "$ADD_OAF" = "true" ]; then
   done
   rm -rf "$PKG_DIR/OpenAppFilter"
 fi
+# --- 集客AC控制器 gecoosac（第三方仓库 laipeng668/luci-app-gecoosac）---
+# 仓库根目录含 luci-app-gecoosac/（前端）与 gecoosac/（后端预编译二进制）两个子目录，
+# buildroot 递归扫描子目录 Makefile 即可注册 luci-app-gecoosac 与 gecoosac 两个包。
+# gecoosac/Makefile 通过 PROVIDES:=gecoosac-files gecoosac-common 满足前端全部依赖，
+# 无需额外包，也不会与官方 feeds 冲突（官方 packages 里没有 gecoosac）。
+if [ "$ADD_GECOOSAC" = "true" ]; then
+  if ! clone https://github.com/laipeng668/luci-app-gecoosac "$PKG_DIR/luci-app-gecoosac-src" main; then
+    echo "::error::luci-app-gecoosac 拉取失败，config 里的 =y 会被 defconfig 剔除"
+    exit 1
+  fi
+  # 展平：该仓库根目录无 Makefile，前端包在 luci-app-gecoosac/ 子目录、后端包在 gecoosac/ 子目录。
+  # 若整仓留在同名目录 package/custom/luci-app-gecoosac/，会触发下方"清理重复嵌套目录"逻辑把前端
+  # 子目录误删（luci-app-gecoosac/luci-app-gecoosac 含 Makefile 被判为重复嵌套），导致包无法注册。
+  # 这里把两个子包提到 PKG_DIR 顶层，既避开误删、又满足 buildroot 递归扫描与 REQUIRED 顶层 Makefile 判定。
+  if [ -d "$PKG_DIR/luci-app-gecoosac-src/luci-app-gecoosac" ]; then
+    mv "$PKG_DIR/luci-app-gecoosac-src/luci-app-gecoosac" "$PKG_DIR/luci-app-gecoosac"
+  fi
+  if [ -d "$PKG_DIR/luci-app-gecoosac-src/gecoosac" ]; then
+    mv "$PKG_DIR/luci-app-gecoosac-src/gecoosac" "$PKG_DIR/gecoosac"
+  fi
+  # gecoosac/Makefile 的 Build/Prepare 用 ../LICENSE（相对包目录即 package/custom/LICENSE），
+  # 展平只搬了子目录，仓库根 LICENSE 需补到 PKG_DIR 顶层，否则 prepare 阶段 cp: cannot stat '../LICENSE'
+  [ -f "$PKG_DIR/luci-app-gecoosac-src/LICENSE" ] && cp -f "$PKG_DIR/luci-app-gecoosac-src/LICENSE" "$PKG_DIR/LICENSE"
+  rm -rf "$PKG_DIR/luci-app-gecoosac-src"
+fi
+
 # ---------------------------------------------------------
 # 校验：默认开启的两个插件必须拉到，否则 defconfig 会静默剔除，
 #       编出来的固件缺少状态页还不易察觉
@@ -420,6 +452,7 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
   # 必装插件（config 里是 =y 的那几个）必须进索引，否则 defconfig 会静默剔除
   REQUIRED=""
   [ "$ADD_AIROHA_NPU" = "true" ] && REQUIRED="$REQUIRED luci-app-airoha-npu"
+  [ "$ADD_GECOOSAC" = "true" ] && REQUIRED="$REQUIRED luci-app-gecoosac"
   if [ "$ADD_LUCI_APP" = "true" ]; then
     REQUIRED="$REQUIRED luci-app-natmode luci-app-pon-status"
   fi

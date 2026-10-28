@@ -213,7 +213,11 @@ on:
       private_repo:
         description: '拉取私有仓库（FTTR 三件套来源，需凭证）'
         required: false
-        default: 'qwe-qaq/openwrt-fttr'
+        # 默认 none：qwe-qaq/openwrt-fttr 是私有仓库，本 fork 无读权限时探测必然
+        # 404、无令牌可用，Setup private repo credentials 会 exit 1，整次构建在
+        # 编译前就失败。默认 none 可让构建无痛跳过 FTTR。
+        # 拿到 collaborator 权限后，在下拉里手动选回 qwe-qaq/openwrt-fttr 即可。
+        default: 'none'      # 原为 'qwe-qaq/openwrt-fttr'
         type: choice
         options:
           - qwe-qaq/openwrt-fttr
@@ -933,6 +937,25 @@ jobs:
           echo "✅ PON 关键包校验通过"
 
           # =========================================================
+          # C++ 运行时校验：libstdcpp（apk 产物名 libstdcpp6）
+          #   ImmortalWrt SNAPSHOT 的 apk 仓库里没有 libstdcpp6，
+          #   而 nmap / nping 的 depends 硬写着它，于是依赖 nping 的
+          #   luci-app-ssr-plus 永远装不上。编进固件才能补上这一环。
+          #   defconfig 会把源码树里不存在的符号静默剔除，必须显式兜住。
+          # =========================================================
+          if ! grep -q "^CONFIG_PACKAGE_libstdcpp=y" .config; then
+            echo "::error::libstdcpp 未启用（apk 产物为 libstdcpp6），nping / luci-app-ssr-plus 将无法安装"
+            echo "  --- 诊断 ---"
+            echo "  1) 源码包定义 Package/libstdcpp: $(grep -c 'define Package/libstdcpp' package/libs/toolchain/Makefile 2>/dev/null) 处"
+            echo "  2) ABI_VERSION: $(grep -A5 'define Package/libstdcpp' package/libs/toolchain/Makefile 2>/dev/null | grep -o 'ABI_VERSION:=[0-9]*' | head -1)"
+            echo "  3) 机型 config 是否有该行: $(grep -c '^CONFIG_PACKAGE_libstdcpp=y' "$GITHUB_WORKSPACE/${CONFIG_FILE}" 2>/dev/null)"
+            echo "  4) 机型 config 是否显式关掉: $(grep -c 'CONFIG_PACKAGE_libstdcpp is not set' "$GITHUB_WORKSPACE/${CONFIG_FILE}" 2>/dev/null)"
+            echo "  5) .config 现状: $(grep -c 'CONFIG_PACKAGE_libstdcpp' .config) 行"
+            exit 1
+          fi
+          echo "✅ C++ 运行时 libstdcpp 校验通过（apk 产物名 libstdcpp6）"
+
+          # =========================================================
           # 状态插件校验：第三方包若在 package/custom 里缺失，
           # defconfig 会把 .config 里的 =y 当无效符号静默删除，
           # 编完发现界面里没这个菜单时才察觉就晚了
@@ -1030,8 +1053,11 @@ jobs:
 
           # 清理下载失败残留的小文件，否则解压时报 "does not look like a tar archive"
           echo "--- 清理损坏的下载包 ---"
-          find dl -size -1024c -type f -exec ls -l {} \; 2>/dev/null
-          find dl -size -1024c -type f -exec rm -f {} \; 2>/dev/null
+          # ⚠ 只清 dl/ 顶层，禁止递归：dl/go-mod-cache 里大量 Go 源文件小于 1KB
+          #   （lo/internal/rand、golib/clock、golib/errors、protobuf/internal/
+          #   editiondefaults 等），被删后目录变空，Go 会判定包不存在并报
+          #   "no required module provides package ..."。git 克隆目录同理不能碰。
+          find dl -maxdepth 1 -type f -size -1024c -print -exec rm -f {} \; 2>/dev/null
 
           echo "dl 目录共 $(ls -1 dl 2>/dev/null | wc -l) 个文件"
           ls -lh dl 2>/dev/null | head -20
@@ -1268,8 +1294,11 @@ jobs:
           done
 
           # 清理下载失败残留的小文件
-          find dl -size -1024c -type f -exec ls -l {} \; 2>/dev/null
-          find dl -size -1024c -type f -exec rm -f {} \; 2>/dev/null
+          # ⚠ 只清 dl/ 顶层，禁止递归：dl/go-mod-cache 里大量 Go 源文件小于 1KB
+          #   （lo/internal/rand、golib/clock、golib/errors、protobuf/internal/
+          #   editiondefaults 等），被删后目录变空，Go 会判定包不存在并报
+          #   "no required module provides package ..."。git 克隆目录同理不能碰。
+          find dl -maxdepth 1 -type f -size -1024c -print -exec rm -f {} \; 2>/dev/null
           echo "dl 目录共 $(ls -1 dl 2>/dev/null | wc -l) 个文件"
 
           if [ "$OK" -ne 1 ]; then
@@ -1414,6 +1443,24 @@ jobs:
           rm -f "$TARBALL"
 
       # =========================================================
+      # 18.7 构建完成后：把 Go 模块缓存排除出 dl 缓存
+      #      dl/go-mod-cache 的模块目录是只读的，且 Go 不会重新校验已解压的
+      #      模块内容 —— 一旦在打包/解包环节被破坏就无法自愈。故构建结束后
+      #      丢弃它，让下次构建重新下载模块，换取缓存永远干净。
+      # =========================================================
+      - name: Drop go-mod-cache from dl cache
+        if: always() && env.USE_DL_CACHE == 'true'
+        run: |
+          GMC="$BUILD_ROOT/openwrt/dl/go-mod-cache"
+          if [ -d "$GMC" ]; then
+            echo "丢弃前占用: $(du -sh "$GMC" 2>/dev/null | cut -f1)"
+            rm -rf "$GMC"
+            echo "✅ 已丢弃 dl/go-mod-cache，不再纳入 dl 缓存"
+          else
+            echo "dl/go-mod-cache 不存在，无需处理"
+          fi
+
+      # =========================================================
       # 19. 空间检查
       # =========================================================
       - name: Check space usage
@@ -1432,6 +1479,54 @@ jobs:
           # （Clone source code 步骤 ln -sf 建的），upload-artifact 遍历
           # 符号链接目录不可靠，可能传一个空包。
           path: ${{ env.BUILD_ROOT }}/openwrt/bin
+
+      # =========================================================
+      # 20.5 单独收集 libstdcpp6 apk（不刷机也能给现有路由器补装）
+      #   背景：ImmortalWrt SNAPSHOT 的 apk 源缺 libstdcpp6，
+      #   而 nping / luci-app-ssr-plus 依赖它。固件里已经带了，
+      #   但手上那台已经刷好的机器可以直接用这里产出的 apk 补：
+      #     apk add --allow-untrusted ./libstdcpp6-*.apk
+      #   （先把同包里的 public-key.pem 丢进 /etc/apk/keys 就不必加参数）
+      # ⚠ 必须排在「Organize files」之前 —— 那一步会 rm -rf bin/targets/*/*/packages
+      # =========================================================
+      - name: Collect libstdcpp6 apk
+        id: collect-apk
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          OUT="$RUNNER_TEMP/apk-extra"
+          rm -rf "$OUT"; mkdir -p "$OUT"
+
+          # apk 模式下产物在 bin/targets/<target>/<subtarget>/packages/，
+          # 部分包也落在 bin/packages/<arch>/<feed>/，两处都扫。
+          for d in "$BUILD_ROOT/openwrt/bin/packages" "$BUILD_ROOT"/openwrt/bin/targets/*/*/packages; do
+            [ -d "$d" ] || continue
+            find "$d" -name 'libstdcpp6-*.apk' -exec cp -v {} "$OUT/" \; 2>/dev/null || true
+            # 顺带带上 nping（ssr-plus 依赖它，一起给省一次下载）
+            find "$d" -name 'nping-*.apk' -exec cp -v {} "$OUT/" \; 2>/dev/null || true
+          done
+          # 构建用的公钥：导入 /etc/apk/keys 后装自编包不用 --allow-untrusted
+          for k in key-build.pem public-key.pem; do
+            [ -f "$BUILD_ROOT/openwrt/$k" ] && cp -v "$BUILD_ROOT/openwrt/$k" "$OUT/"
+          done
+
+          echo "===== 收集结果 ====="
+          ls -l "$OUT" 2>/dev/null || true
+          if ! ls "$OUT"/libstdcpp6-*.apk >/dev/null 2>&1; then
+            echo "::warning::没找到 libstdcpp6 的 apk —— 检查 CONFIG_PACKAGE_libstdcpp 是否真的编出来了"
+            echo "  bin/packages 下 apk 总数: $(find "$BUILD_ROOT/openwrt/bin/packages" -name '*.apk' 2>/dev/null | wc -l)"
+            echo "  含 stdcpp 的文件: $(find "$BUILD_ROOT/openwrt/bin/packages" -iname '*stdcpp*' 2>/dev/null | head -5)"
+          else
+            echo "APK_EXTRA_DIR=$OUT" >> "$GITHUB_ENV"
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload libstdcpp6 apk
+        uses: actions/upload-artifact@v5
+        if: steps.collect-apk.outputs.status == 'success'
+        with:
+          name: libstdcpp6_apk_${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
+          path: ${{ env.APK_EXTRA_DIR }}
+          if-no-files-found: warn
 
       # =========================================================
       # 21. 整理并上传固件

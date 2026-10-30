@@ -113,8 +113,9 @@ echo "✅ uci-defaults LAN 地址脚本已写入：$LAN_IP/$LAN_NETMASK"
 #   base-files/Makefile 里硬编码的 192.168.1.1。所以两处都要改，
 #   否则 LAN 换成 10.0.0.x 后进 failsafe 还得把电脑换回 192.168.1.x。
 #
-#   时机：本脚本在步骤 9 的 `make defconfig` 之前跑（workflow 顺序如此），
-#   写进 .config 的字符串项会被 defconfig 原样保留，不会被展开重置。
+#   时机：本脚本在步骤 9 的 `make defconfig` 之前跑（workflow 顺序如此）。
+#   注意：只写 .config 不够 —— 见下面 image-config.in 那段说明，没有可见
+#   prompt 的符号会被 defconfig 按 default 重算，所以三层都要改。
 # ---------------------------------------------------------
 BF_MK="package/base-files/Makefile"
 if [ -f "$BF_MK" ]; then
@@ -136,6 +137,19 @@ if [ -f .config ]; then
   sed -i '/^CONFIG_TARGET_PREINIT_BROADCAST=/d; /^# CONFIG_TARGET_PREINIT_BROADCAST is not set/d' .config
   echo "CONFIG_TARGET_PREINIT_BROADCAST=\"$LAN_BROADCAST\"" >> .config
   echo "✅ .config 里 preinit 网络 -> $LAN_IP / $LAN_BROADCAST（failsafe 同网段）"
+fi
+
+# Kconfig 侧（决定性的一层）：TARGET_PREINIT_IP / _BROADCAST 的 prompt 是
+# `if PREINITOPT`，而基座里 PREINITOPT 是关的 —— 没有可见 prompt 的符号，
+# `make defconfig` 会按 default 重算，上面写进 .config 的值会被直接丢掉。
+# 所以 default 本身也得改；.config 那两行留着无害（该符号可写时会优先）。
+IMG_IN="package/base-files/image-config.in"
+if [ -f "$IMG_IN" ]; then
+  sed -i "/^config TARGET_PREINIT_IP\$/,/^config /s|^\([[:space:]]*default[[:space:]]*\)\"192\.168\.1\.1\"|\1\"$LAN_IP\"|" "$IMG_IN"
+  sed -i "/^config TARGET_PREINIT_BROADCAST\$/,/^config /s|^\([[:space:]]*default[[:space:]]*\)\"192\.168\.1\.255\"|\1\"$LAN_BROADCAST\"|" "$IMG_IN"
+  echo "✅ image-config.in 里 preinit 的 Kconfig 默认值 -> $LAN_IP / $LAN_BROADCAST"
+else
+  echo "::warning::未找到 $IMG_IN，preinit 默认值只有 .config 一层，可能被 defconfig 覆盖"
 fi
 
 # ---------------------------------------------------------

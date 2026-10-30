@@ -5,7 +5,7 @@
 `main` 分支与上游**完全一致**（无任何自有改动），所有定制只落在本分支。
 
 - 基线提交：`1bdb291`（= 上游 `main`）
-- 与 `main` 的差异：**16 个文件，+452 / −19**
+- 与 `main` 的差异：**18 个文件，+896 / −23**
 
 ---
 
@@ -13,8 +13,9 @@
 
 | 文件 | 变更 | 一句话说明 |
 |---|---|---|
-| `configs/*.config`（13 个机型） | +20 ×13 | 统一补 `kmod-nft-queue` / `libstdcpp` / `kmod-dummy` |
-| `configs/h3c_hm2004-du.config` | +63 / −19 | 同上三项 + `frpc` / `gecoosac`，并**关闭 FTTR 下行** |
+| `configs/*.config`（12 个机型） | +36 ×12 | 统一补 `kmod-nft-queue` / `libstdcpp` / `kmod-dummy`，再追加 `frpc` / `gecoosac` 全套 |
+| `configs/an7581.config`、`an7583.config`（SoC 基座镜像） | +19 ×2 | 只补 `kmod-nft-queue` / `libstdcpp` / `kmod-dummy`（CI 用的是上游源码里那份，插件不重复加） |
+| `configs/h3c_hm2004-du.config` | +71 / −12 | 同上三项 + `frpc` / `gecoosac`，并**关闭 FTTR 下行** |
 | `diy-part1.sh` | +37 / −1 | 新增 `ADD_GECOOSAC`；`ADD_FLUENT=true`；`ADD_FTTR` 默认 false |
 | `.github/workflows/build-ponwrt.yml` | +105 / −4 | `private_repo` 默认 none；libstdcpp 硬校验；dl 清理防误删；收集 apk |
 
@@ -49,18 +50,23 @@ libstdcpp6 (no such package): required by: nping-7.991-r1[libstdcpp6]
 
 **为什么加 `kmod-dummy`**：占位空网卡，分流测试 / 多实例场景要用。
 
-### 2. `h3c_hm2004-du.config` 额外加两个插件
+### 2. 全部机型都加了 frpc + 集客 AC
 
 ```kconfig
+CONFIG_PACKAGE_frpc=y
 CONFIG_PACKAGE_luci-app-frpc=y
 CONFIG_PACKAGE_luci-i18n-frpc-zh-cn=y
+CONFIG_PACKAGE_gecoosac=y
 CONFIG_PACKAGE_luci-app-gecoosac=y
 CONFIG_PACKAGE_luci-i18n-gecoosac-zh-cn=y
-CONFIG_PACKAGE_gecoosac=y
 ```
 
 - **frpc**：来自 immortalwrt 的 luci feed，只需勾选。
-- **gecoosac**（集客 AC 控制器）：来自第三方仓库 `laipeng668/luci-app-gecoosac`，由 `diy-part1.sh` 拉取。后端 `gecoosac` 通过 `PROVIDES:=gecoosac-files gecoosac-common` 满足前端的全部依赖，不需要额外包，也不会和官方 feeds 冲突。
+- **gecoosac**（集客 AC 控制器）：来自第三方仓库 `laipeng668/luci-app-gecoosac`，由 `diy-part1.sh` 拉取。后端 `gecoosac` 通过 `PROVIDES:=gecoosac-files gecoosac-common` 满足前端的全部依赖，不需要额外包，也不会和官方 feeds 冲突。后端还是**预编译二进制**（`PKG_ARCH:=ac_linux_arm64`，从该仓库 Release 下载），AN758x 是 aarch64，架构对得上。
+
+**为什么只改 `configs/<机型>.config`**：这三项原来是只给 `h3c_hm2004-du` 加的（2026-10-30 提升为全机型）。机型 config 是唯一被 `cat` 追加进 `.config` 的那一层；`configs/an7581.config` / `an7583.config` 在本仓库只是上游 defconfig 的镜像，CI 用的是 `pbs05/ponwrt` **源码树里**的那份，改这边的副本不生效，所以不重复加。
+
+**注意 `diy-part1.sh` 的 `ADD_GECOOSAC` 不能关**：关掉后源码拉不下来，而机型 config 里仍写着 `luci-app-gecoosac=y`，`defconfig` 会把它当无效符号**静默剔除**——不报错，但固件里就是没有，很难察觉。
 
 ### 3. `h3c_hm2004-du.config` 关闭 FTTR 下行
 

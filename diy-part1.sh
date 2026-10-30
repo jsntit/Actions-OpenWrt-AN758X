@@ -36,6 +36,7 @@ ADD_WATCHDOG=false      # luci-app-watchdog（看门狗，包在子目录，需�
 ADD_TASKPLAN=false      # luci-app-taskplan（定时任务）
 ADD_OAF=false           # luci-app-oaf（应用过滤，含内核模块，高风险）
 ADD_GECOOSAC=true      # luci-app-gecoosac（集客AC控制器，第三方仓库 laipeng668）
+                       #   拉取 / 预取失败只打 warning 并跳过该插件，不中断构建
 
 ADD_LUCI_APP=true       # qwe-qaq/luci-app 仓库（monorepo）
                         #   ├─ luci-app-natmode     NAT 类型三选一（网络 → NAT 类型）
@@ -312,25 +313,120 @@ fi
 # buildroot 递归扫描子目录 Makefile 即可注册 luci-app-gecoosac 与 gecoosac 两个包。
 # gecoosac/Makefile 通过 PROVIDES:=gecoosac-files gecoosac-common 满足前端全部依赖，
 # 无需额外包，也不会与官方 feeds 冲突（官方 packages 里没有 gecoosac）。
+#
+# ⚠ 降级策略（不要改回 exit 1）
+#   集客 AC 是「第三方仓库 + GitHub Release 预编译二进制」两重外部依赖，
+#   而 configs/ 里 12 个机型现在全勾了它。上游删版本 / 换哈希 / 网络抽风，
+#   make 就会在 clone 或 download 阶段硬失败，一挂挂掉全部机型。
+#   所以这里两处失败都只打 warning + 写 job summary，然后把包从
+#   package/custom 摘掉：defconfig 会把 config 里的 CONFIG_PACKAGE_gecoosac*
+#   当无效符号静默剔除，结果是「固件少一个插件」，而不是整次构建失败。
+GECOOSAC_ARCH="${GECOOSAC_ARCH:-ac_linux_arm64}"   # AN758x 全系 aarch64
+GECOOSAC_OK=true
+
+skip_gecoosac() {  # <原因>
+  echo "::warning::集客 AC 已跳过：$1"
+  echo "::warning::本次固件不含 luci-app-gecoosac / gecoosac / 其中文包，其余功能不受影响"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    {
+      echo "### ⚠️ 集客 AC（gecoosac）本次构建已跳过"
+      echo
+      echo "原因：$1"
+      echo
+      echo "产物中不含 \`luci-app-gecoosac\` / \`gecoosac\` / \`luci-i18n-gecoosac-zh-cn\`；如需该功能，确认上游 Release 还在后重跑即可。"
+      echo
+    } >> "$GITHUB_STEP_SUMMARY"
+  fi
+  GECOOSAC_OK=false
+}
+
+# 预取 gecoosac 后端二进制到 dl/，并按 Makefile 里的 PKG_HASH 校验。
+#   成功 → buildroot 的 download 阶段直接命中缓存，不再联网；
+#   失败 → 返回 1，由调用方降级。这一步是「提前发现」的关键：
+#   否则 404 会推迟到 make download 才炸，那时已经没法优雅退出了。
+gecoosac_prefetch() {  # <gecoosac 包目录> <dl 目录>
+  local mk="$1/Makefile" dl="$2" ver hash src url
+  [ -f "$mk" ] || { echo "找不到 $mk"; return 1; }
+
+  ver=$(sed -n 's/^PKG_VERSION:=[[:space:]]*//p' "$mk" | head -1 | tr -d ' \r')
+  # Makefile 里是「PKG_ARCH:=xxx」紧跟「PKG_HASH:=yyy」的成对结构，按目标架构取那一条
+  hash=$(awk -v a="$GECOOSAC_ARCH" '
+    $0 ~ ("PKG_ARCH:=[[:space:]]*" a "[[:space:]]*$") { f = 1; next }
+    f && /PKG_HASH:=/ { sub(/.*PKG_HASH:=[[:space:]]*/, ""); gsub(/[[:space:]]/, ""); print; exit }
+  ' "$mk")
+  if [ -z "$ver" ] || [ -z "$hash" ]; then
+    echo "解析 gecoosac/Makefile 失败（ver='$ver' hash='$hash' arch=$GECOOSAC_ARCH）"
+    return 1
+  fi
+  case "$hash" in
+    dummy)
+      echo "该架构没有预编译二进制（Makefile 里 PKG_HASH:=dummy，arch=$GECOOSAC_ARCH）"
+      return 1 ;;
+  esac
+
+  src="gecoosac-${ver}-${GECOOSAC_ARCH}"     # 与 buildroot 的 $(PKG_SOURCE) 一致
+  url="https://github.com/laipeng668/luci-app-gecoosac/releases/download/V${ver}/${GECOOSAC_ARCH}"
+  mkdir -p "$dl"
+
+  if [ -f "$dl/$src" ]; then
+    if echo "$hash  $dl/$src" | sha256sum -c --status 2>/dev/null; then
+      echo "✅ dl 缓存已有 gecoosac 二进制且哈希匹配: $src"
+      return 0
+    fi
+    echo "dl 里的 $src 哈希不匹配，重新下载"
+    rm -f "$dl/$src"
+  fi
+
+  echo "--- 预取 gecoosac 二进制: $src ---"
+  if ! curl -fsSL --retry 3 --retry-delay 3 --connect-timeout 20 -o "$dl/$src.part" "$url"; then
+    echo "下载失败: $url"
+    rm -f "$dl/$src.part"
+    return 1
+  fi
+  if ! echo "$hash  $dl/$src.part" | sha256sum -c --status 2>/dev/null; then
+    echo "哈希校验失败（上游 Release 被替换？）: $src"
+    rm -f "$dl/$src.part"
+    return 1
+  fi
+  mv -f "$dl/$src.part" "$dl/$src"
+  echo "✅ 已预取并校验: dl/$src"
+  return 0
+}
+
 if [ "$ADD_GECOOSAC" = "true" ]; then
-  if ! clone https://github.com/laipeng668/luci-app-gecoosac "$PKG_DIR/luci-app-gecoosac-src" main; then
-    echo "::error::luci-app-gecoosac 拉取失败，config 里的 =y 会被 defconfig 剔除"
-    exit 1
+  # 这里不用 clone()：它在失败时会打 ::error:: 注解，降级场景下只会误导人
+  GECOOSAC_SRC="$PKG_DIR/luci-app-gecoosac-src"
+  rm -rf "$GECOOSAC_SRC"
+  echo "--- git clone https://github.com/laipeng668/luci-app-gecoosac -> $GECOOSAC_SRC ---"
+  git clone --depth 1 -b main https://github.com/laipeng668/luci-app-gecoosac "$GECOOSAC_SRC" 2>&1 | tail -3
+
+  if [ ! -d "$GECOOSAC_SRC" ]; then
+    rm -rf "$GECOOSAC_SRC"
+    skip_gecoosac "仓库 laipeng668/luci-app-gecoosac 克隆失败（网络不通 / 仓库被删或改名）"
+  else
+    echo "✅ 克隆成功: $GECOOSAC_SRC"
+    # 展平：该仓库根目录无 Makefile，前端包在 luci-app-gecoosac/ 子目录、后端包在 gecoosac/ 子目录。
+    # 若整仓留在同名目录 package/custom/luci-app-gecoosac/，会触发下方"清理重复嵌套目录"逻辑把前端
+    # 子目录误删（luci-app-gecoosac/luci-app-gecoosac 含 Makefile 被判为重复嵌套），导致包无法注册。
+    # 这里把两个子包提到 PKG_DIR 顶层，既避开误删、又满足 buildroot 递归扫描与 REQUIRED 顶层 Makefile 判定。
+    if [ -d "$GECOOSAC_SRC/luci-app-gecoosac" ]; then
+      mv "$GECOOSAC_SRC/luci-app-gecoosac" "$PKG_DIR/luci-app-gecoosac"
+    fi
+    if [ -d "$GECOOSAC_SRC/gecoosac" ]; then
+      mv "$GECOOSAC_SRC/gecoosac" "$PKG_DIR/gecoosac"
+    fi
+    # gecoosac/Makefile 的 Build/Prepare 用 ../LICENSE（相对包目录即 package/custom/LICENSE），
+    # 展平只搬了子目录，仓库根 LICENSE 需补到 PKG_DIR 顶层，否则 prepare 阶段 cp: cannot stat '../LICENSE'
+    [ -f "$GECOOSAC_SRC/LICENSE" ] && cp -f "$GECOOSAC_SRC/LICENSE" "$PKG_DIR/LICENSE"
+    rm -rf "$GECOOSAC_SRC"
+
+    # 最后一步：预取后端二进制。失败就把两个包一起摘掉 ——
+    # 否则 make 会在 download 阶段硬失败，这次降级要拦的就是它。
+    if ! gecoosac_prefetch "$PKG_DIR/gecoosac" "dl"; then
+      rm -rf "$PKG_DIR/gecoosac" "$PKG_DIR/luci-app-gecoosac"
+      skip_gecoosac "gecoosac 预编译二进制下载或哈希校验失败（上游 Release 可能已删除或被替换）"
+    fi
   fi
-  # 展平：该仓库根目录无 Makefile，前端包在 luci-app-gecoosac/ 子目录、后端包在 gecoosac/ 子目录。
-  # 若整仓留在同名目录 package/custom/luci-app-gecoosac/，会触发下方"清理重复嵌套目录"逻辑把前端
-  # 子目录误删（luci-app-gecoosac/luci-app-gecoosac 含 Makefile 被判为重复嵌套），导致包无法注册。
-  # 这里把两个子包提到 PKG_DIR 顶层，既避开误删、又满足 buildroot 递归扫描与 REQUIRED 顶层 Makefile 判定。
-  if [ -d "$PKG_DIR/luci-app-gecoosac-src/luci-app-gecoosac" ]; then
-    mv "$PKG_DIR/luci-app-gecoosac-src/luci-app-gecoosac" "$PKG_DIR/luci-app-gecoosac"
-  fi
-  if [ -d "$PKG_DIR/luci-app-gecoosac-src/gecoosac" ]; then
-    mv "$PKG_DIR/luci-app-gecoosac-src/gecoosac" "$PKG_DIR/gecoosac"
-  fi
-  # gecoosac/Makefile 的 Build/Prepare 用 ../LICENSE（相对包目录即 package/custom/LICENSE），
-  # 展平只搬了子目录，仓库根 LICENSE 需补到 PKG_DIR 顶层，否则 prepare 阶段 cp: cannot stat '../LICENSE'
-  [ -f "$PKG_DIR/luci-app-gecoosac-src/LICENSE" ] && cp -f "$PKG_DIR/luci-app-gecoosac-src/LICENSE" "$PKG_DIR/LICENSE"
-  rm -rf "$PKG_DIR/luci-app-gecoosac-src"
 fi
 
 # ---------------------------------------------------------
@@ -452,7 +548,9 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
   # 必装插件（config 里是 =y 的那几个）必须进索引，否则 defconfig 会静默剔除
   REQUIRED=""
   [ "$ADD_AIROHA_NPU" = "true" ] && REQUIRED="$REQUIRED luci-app-airoha-npu"
-  [ "$ADD_GECOOSAC" = "true" ] && REQUIRED="$REQUIRED luci-app-gecoosac"
+  # 集客 AC：降级（GECOOSAC_OK=false）时包已被主动摘掉，这里若再要求它进索引
+  # 就会 exit 1，等于白降级 —— 所以必须带上开关判断
+  [ "$ADD_GECOOSAC" = "true" ] && [ "$GECOOSAC_OK" = "true" ] && REQUIRED="$REQUIRED luci-app-gecoosac"
   if [ "$ADD_LUCI_APP" = "true" ]; then
     REQUIRED="$REQUIRED luci-app-natmode luci-app-pon-status"
   fi

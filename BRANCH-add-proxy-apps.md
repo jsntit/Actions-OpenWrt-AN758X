@@ -5,7 +5,7 @@
 `main` 分支与上游**完全一致**（无任何自有改动），所有定制只落在本分支。
 
 - 基线提交：`1bdb291`（= 上游 `main`）
-- 与 `main` 的差异：**18 个文件，+896 / −23**
+- 与 `main` 的差异：**18 个文件，+1015 / −23**
 
 ---
 
@@ -16,7 +16,7 @@
 | `configs/*.config`（12 个机型） | +36 ×12 | 统一补 `kmod-nft-queue` / `libstdcpp` / `kmod-dummy`，再追加 `frpc` / `gecoosac` 全套 |
 | `configs/an7581.config`、`an7583.config`（SoC 基座镜像） | +19 ×2 | 只补 `kmod-nft-queue` / `libstdcpp` / `kmod-dummy`（CI 用的是上游源码里那份，插件不重复加） |
 | `configs/h3c_hm2004-du.config` | +71 / −12 | 同上三项 + `frpc` / `gecoosac`，并**关闭 FTTR 下行** |
-| `diy-part1.sh` | +37 / −1 | 新增 `ADD_GECOOSAC`；`ADD_FLUENT=true`；`ADD_FTTR` 默认 false |
+| `diy-part1.sh` | +115 / −17 | 新增 `ADD_GECOOSAC`（含失败降级）；`ADD_FLUENT=true`；`ADD_FTTR` 默认 false |
 | `.github/workflows/build-ponwrt.yml` | +105 / −4 | `private_repo` 默认 none；libstdcpp 硬校验；dl 清理防误删；收集 apk |
 
 `main` 里**没有**的任何改动，本分支也**没有**；反过来本分支不修改上游的任何既有行为（除了下面明确列出的 4 处默认值）。
@@ -100,7 +100,7 @@ CONFIG_PACKAGE_luci-i18n-gecoosac-zh-cn=y
 | 项 | `main` | 本分支 | 原因 |
 |---|---|---|---|
 | `ADD_FLUENT` | `false` | **`true`** | 用 Fluent 2 主题 |
-| `ADD_GECOOSAC` | 无此项 | **新增，`true`** | 集客 AC 控制器 |
+| `ADD_GECOOSAC` | 无此项 | **新增，`true`** | 集客 AC 控制器；拉取/下载失败只跳过不中断 |
 | `ADD_FTTR` | `true` | **`false`** | 私有仓库无权限，匿名 clone 必然 404 并 `exit 1` |
 
 ### `ADD_GECOOSAC` 的实现要点
@@ -116,7 +116,28 @@ gecoosac/            后端（预编译二进制）
 
 1. **展平**：把两个子目录提到 `package/custom/` 顶层。若整仓留在同名目录 `package/custom/luci-app-gecoosac-src/`，会触发脚本后方的「清理重复嵌套目录」逻辑——`luci-app-gecoosac/luci-app-gecoosac` 含 Makefile 会被判为重复嵌套而误删，导致前端包注册不上。
 2. **补 LICENSE**：`gecoosac/Makefile` 的 `Build/Prepare` 引用 `../LICENSE`（即 `package/custom/LICENSE`）。展平只搬了子目录，仓库根的 LICENSE 要单独补上去，否则 prepare 阶段报 `cp: cannot stat '../LICENSE'`。
-3. **进 `REQUIRED` 校验**：`ADD_GECOOSAC=true` 时把 `luci-app-gecoosac` 加进必装清单，索引里查不到就报错，不会静默编出一个没界面的固件。
+3. **进 `REQUIRED` 校验**：`ADD_GECOOSAC=true` 且**未降级**时，把 `luci-app-gecoosac` 加进必装清单，索引里查不到就报错，不会静默编出一个没界面的固件。
+4. **预取后端二进制 + 失败降级**（`gecoosac_prefetch` / `skip_gecoosac`）：见下节。
+
+### 集客 AC 的降级策略（2026-10-30）
+
+集客 AC 有**两重**外部依赖：仓库（`git clone`）+ GitHub Release 里的预编译二进制（`make download`）。而 `configs/` 里 12 个机型现在全勾了它——任何一处挂掉 `make` 都会硬失败，等于一个第三方 Release 能拖垮全部机型。
+
+| 失败点 | 原行为 | 现行为 |
+|---|---|---|
+| `git clone` 仓库失败 | `exit 1`，整轮结束 | `::warning::` + 跳过该插件 |
+| 后端二进制 404 / 哈希不符 | 推迟到 `make download` 才炸，届时无解 | `gecoosac_prefetch` **提前**下载校验，失败即跳过 |
+
+实现要点：
+
+1. `gecoosac_prefetch <包目录> <dl 目录>`：从 `gecoosac/Makefile` 解析 `PKG_VERSION` 和对应架构的 `PKG_HASH`（`PKG_ARCH:=xxx` 紧跟 `PKG_HASH:=yyy` 的成对结构），自己把 Release 资产下到 `dl/$(PKG_SOURCE)` 并 `sha256sum -c` 校验；文件已在 `dl/` 且哈希对得上就直接返回，不重复下载。
+   - **为什么要提前**：等 `make` 发现 404 时已经没法优雅退出，`make download` 一挂整轮就结束了。提前探测 + 预置缓存是唯一能「warn 而不是 die」的位置。
+   - `PKG_HASH:=dummy`（该架构上游没编预编译包）同样按失败处理。
+   - 架构默认 `ac_linux_arm64`（AN758x 全系 aarch64），可用环境变量 `GECOOSAC_ARCH` 覆盖。
+2. 失败时走 `skip_gecoosac`：打 `::warning::`、写 `$GITHUB_STEP_SUMMARY`（run 页面 Summary 直接可见），并删掉 `package/custom/{gecoosac,luci-app-gecoosac}` → `defconfig` 把 `.config` 里的 `CONFIG_PACKAGE_gecoosac*` 当无效符号静默剔除 → 固件少一个插件，其余照常编完。
+3. `REQUIRED` 校验必须带 `GECOOSAC_OK` 判断，否则降级后「索引里查不到就 `exit 1`」会把降级又抵消回去。
+
+> ⚠ **体积代价**：arm64 那份二进制约 **16 MB**（`gecoosac-2.2.20251015-ac_linux_arm64`，16,318,648 字节）。现在**每个**机型都会因此变大一圈，而之前只有 2004-DU 有。想精简的机型把 config 里那三行 gecoosac 删掉即可（`ADD_GECOOSAC` 保持 `true` 也无妨，只是不再被选中）。
 
 ---
 

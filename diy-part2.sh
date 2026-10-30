@@ -3,6 +3,7 @@
 # diy-part2.sh —— 默认值定制（在 .config 加载之后运行，cwd = ponwrt 根）
 #   1) 时区 Asia/Shanghai (CST-8)
 #   1b) 默认 LAN 地址 10.0.0.1
+#   1c) failsafe / 预启动网络同步到 10.0.0.1
 #   2) 5G WiFi：CN / auto / HE160
 #   3) 概览页 CPU 行：USR/SYS + 每核明细
 #   4) 固件版本追加作者与构建时间
@@ -24,9 +25,10 @@ WIFI_5G_HTMODE="${WIFI_5G_HTMODE:-HE160}"      # 160MHz（WiFi6）；回落 HE80
 WIFI_5G_FALLBACK="${WIFI_5G_FALLBACK:-HE80}"   # 硬件不支持 160MHz 时的回落值
 
 # 默认 LAN 地址（编译期常量，会写进 config_generate 与 uci-defaults 脚本）
-# 想换网段就改这里，两处会同步生效。
+# 想换网段就改这里，两处会同步生效；failsafe 的预启动网络也跟这个走。
 LAN_IP="${LAN_IP:-10.0.0.1}"
 LAN_NETMASK="${LAN_NETMASK:-255.255.255.0}"
+LAN_BROADCAST="${LAN_BROADCAST:-10.0.0.255}"
 
 # 可由 workflow 的 fw_author 输入项覆盖（经 env 注入）；本地单独跑时默认 qwe
 FW_AUTHOR="${FW_AUTHOR:-qwe}"
@@ -103,6 +105,38 @@ exit 0
 UCEOF
 chmod +x files/etc/uci-defaults/95-lan-ip
 echo "✅ uci-defaults LAN 地址脚本已写入：$LAN_IP/$LAN_NETMASK"
+
+# ---------------------------------------------------------
+# 1c. failsafe / 预启动网络同步到 $LAN_IP
+#   进 failsafe 时用的是 pi_ip（写进 /lib/preinit/00_preinit.conf），
+#   它的值来自 CONFIG_TARGET_PREINIT_IP，只有该符号为空才回落
+#   base-files/Makefile 里硬编码的 192.168.1.1。所以两处都要改，
+#   否则 LAN 换成 10.0.0.x 后进 failsafe 还得把电脑换回 192.168.1.x。
+#
+#   时机：本脚本在步骤 9 的 `make defconfig` 之前跑（workflow 顺序如此），
+#   写进 .config 的字符串项会被 defconfig 原样保留，不会被展开重置。
+# ---------------------------------------------------------
+BF_MK="package/base-files/Makefile"
+if [ -f "$BF_MK" ]; then
+  sed -i "/pi_ip=/s|\"192\.168\.1\.1\"|\"$LAN_IP\"|" "$BF_MK"
+  sed -i "/pi_broadcast=/s|\"192\.168\.1\.255\"|\"$LAN_BROADCAST\"|" "$BF_MK"
+  # 这一段在 ifeq CONFIG_TARGET_DEFAULT_LAN_IP_FROM_PREINIT,y 里，当前没开；
+  # 但万一哪天开了，board.json 的 lan.ipaddr 优先级更高，这里不改就会把
+  # config_generate 的改动盖掉（见 1b 的说明）。
+  sed -i "/json_add_string ipaddr/s|\"192\.168\.1\.1\"|\"$LAN_IP\"|" "$BF_MK"
+  echo "✅ Makefile 里 pi_ip / pi_broadcast / 99-lan-ip 的默认值 -> $LAN_IP / $LAN_BROADCAST"
+else
+  echo "::warning::未找到 $BF_MK，跳过 preinit 兜底默认值修改"
+fi
+
+if [ -f .config ]; then
+  # 先删掉旧的两种写法（含 is not set），再追加，避免 kconfig 报重复赋值
+  sed -i '/^CONFIG_TARGET_PREINIT_IP=/d; /^# CONFIG_TARGET_PREINIT_IP is not set/d' .config
+  echo "CONFIG_TARGET_PREINIT_IP=\"$LAN_IP\"" >> .config
+  sed -i '/^CONFIG_TARGET_PREINIT_BROADCAST=/d; /^# CONFIG_TARGET_PREINIT_BROADCAST is not set/d' .config
+  echo "CONFIG_TARGET_PREINIT_BROADCAST=\"$LAN_BROADCAST\"" >> .config
+  echo "✅ .config 里 preinit 网络 -> $LAN_IP / $LAN_BROADCAST（failsafe 同网段）"
+fi
 
 # ---------------------------------------------------------
 # 2. uci-defaults：即使保留了旧配置也强制刷成中国时区

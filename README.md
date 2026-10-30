@@ -97,8 +97,8 @@ staging_dir/tool*      交叉编译器
 |---|---|
 | `files/sbin/cpuusage` + `scripts/patch-luci-cpuusage.sh` | 概览页 CPU 行改为 `USR: 2% SYS: 1% · CPU0 3% CPU1 0%…`（两次 `/proc/stat` 采差值，USR=`user+nice`、SYS=`system+irq+softirq`）。补丁只换 `popen()` 里一个命令字符串，前端和 ACL 都不动；任一环节失败只 warning，构建不受影响 |
 | `files/sbin/tempinfo` | 概览页温度行：CPU / WiFi / PON 三个温度。顶部 `SHOW_PON_OPTICS=1` 可附带收发光/电流/电压（默认 0，因为 `luci-app-pon-status` 卡片已经完整展示，重复） |
-| `diy-part2.sh` | 默认时区 `Asia/Shanghai`、5G 国家码 `CN` / 信道 `auto` / 频宽 `HE160`（不支持时回落到 `HE80`）、固件版本后缀追加作者与构建时间 |
-| `files/etc/uci-defaults/` | 首启强制刷时区与无线参数的兜底脚本 |
+| `diy-part2.sh` | 默认时区 `Asia/Shanghai`、默认 LAN 地址 `10.0.0.1/24`、5G 国家码 `CN` / 信道 `auto` / 频宽 `HE160`（不支持时回落到 `HE80`）、固件版本后缀追加作者与构建时间。LAN 段可用环境变量 `LAN_IP` / `LAN_NETMASK` 覆盖 |
+| `files/etc/uci-defaults/` | 首启强制刷时区、LAN 地址与无线参数的兜底脚本（LAN 只在仍是出厂 `192.168.1.1` 时才改，用户自定义过的网段不动） |
 
 ## NPU 固件
 

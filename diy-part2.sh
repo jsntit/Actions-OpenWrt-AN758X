@@ -2,6 +2,7 @@
 # ================================================================
 # diy-part2.sh —— 默认值定制（在 .config 加载之后运行，cwd = ponwrt 根）
 #   1) 时区 Asia/Shanghai (CST-8)
+#   1b) 默认 LAN 地址 10.0.0.1
 #   2) 5G WiFi：CN / auto / HE160
 #   3) 概览页 CPU 行：USR/SYS + 每核明细
 #   4) 固件版本追加作者与构建时间
@@ -10,7 +11,7 @@
 set -euo pipefail
 
 echo "=========================================="
-echo "默认值定制：时区 + 5G WiFi (diy-part2.sh)"
+echo "默认值定制：时区 + LAN IP + 5G WiFi (diy-part2.sh)"
 echo "=========================================="
 
 # =============================================================
@@ -21,6 +22,11 @@ WIFI_5G_COUNTRY="${WIFI_5G_COUNTRY:-CN}"       # 国家代码（CN = 中国）
 WIFI_5G_CHANNEL="${WIFI_5G_CHANNEL:-auto}"     # 信道（auto = 自动选择）
 WIFI_5G_HTMODE="${WIFI_5G_HTMODE:-HE160}"      # 160MHz（WiFi6）；回落 HE80
 WIFI_5G_FALLBACK="${WIFI_5G_FALLBACK:-HE80}"   # 硬件不支持 160MHz 时的回落值
+
+# 默认 LAN 地址（编译期常量，会写进 config_generate 与 uci-defaults 脚本）
+# 想换网段就改这里，两处会同步生效。
+LAN_IP="${LAN_IP:-10.0.0.1}"
+LAN_NETMASK="${LAN_NETMASK:-255.255.255.0}"
 
 # 可由 workflow 的 fw_author 输入项覆盖（经 env 注入）；本地单独跑时默认 qwe
 FW_AUTHOR="${FW_AUTHOR:-qwe}"
@@ -43,6 +49,60 @@ if [ -f "$CFG" ]; then
 else
   echo "::warning::未找到 $CFG，跳过默认值修改"
 fi
+
+# ---------------------------------------------------------
+# 1b. 默认 LAN 地址 -> $LAN_IP
+#   两层，和下面的时区/无线同一思路：
+#   a) 编译期改 config_generate 里的 lan 默认值 —— 全新刷机、恢复出厂都是它。
+#      前提是 CONFIG_TARGET_DEFAULT_LAN_IP_FROM_PREINIT 没开；开了的话
+#      board.json 的 lan.ipaddr 优先级更高，会盖掉这里（当前基座是 not set）。
+#   b) 运行期 uci-defaults 兜底 —— 保留配置升级时 /etc/config/network 已存在，
+#      光改 config_generate 不生效，靠脚本改写；但只在地址仍是出厂默认
+#      192.168.1.1（或为空）时才动手，用户自己改过的网段不动。
+# ---------------------------------------------------------
+if [ -f "$CFG" ]; then
+  if grep -qF 'lan) ipad=${ipaddr:-"192.168.1.1"} ;;' "$CFG"; then
+    sed -i "s|lan) ipad=\${ipaddr:-\"192\.168\.1\.1\"} ;;|lan) ipad=\${ipaddr:-\"$LAN_IP\"} ;;|" "$CFG"
+    echo "✅ config_generate 默认 LAN 地址 -> $LAN_IP"
+  elif grep -qF "lan) ipad=\${ipaddr:-\"$LAN_IP\"}" "$CFG"; then
+    echo "ℹ config_generate 默认 LAN 地址已是 $LAN_IP，跳过"
+  else
+    echo "::warning::config_generate 里没匹配到预期的 lan 默认地址行，交由 uci-defaults 兜底"
+  fi
+fi
+
+mkdir -p files/etc/uci-defaults
+cat > files/etc/uci-defaults/95-lan-ip <<UCEOF
+#!/bin/sh
+# 默认 LAN 地址：$LAN_IP
+# 由 diy-part2.sh 生成（编译期常量注入）
+# 只在仍是出厂默认 192.168.1.1 时才改写，用户自己调过的网段保持不动。
+
+LAN_IP='$LAN_IP'
+LAN_NETMASK='$LAN_NETMASK'
+
+cur=\$(uci -q get network.lan.ipaddr)
+
+case "\$cur" in
+	""|192.168.1.1|192.168.1.1/*|192.168.1.1/*/*)
+		# config_generate 写的是 list ipaddr 'x.x.x.x/24'，先删再设，
+		# 保证变成单独 option，netmask 由下面这行给出
+		uci -q delete network.lan.ipaddr
+		uci -q set network.lan.proto='static'
+		uci -q set network.lan.ipaddr="\$LAN_IP"
+		uci -q set network.lan.netmask="\$LAN_NETMASK"
+		uci -q commit network
+		logger -t 95-lan-ip "默认 LAN 地址 \$cur -> \$LAN_IP"
+		;;
+	*)
+		logger -t 95-lan-ip "LAN 已是 \$cur，保留自定义地址"
+		;;
+esac
+
+exit 0
+UCEOF
+chmod +x files/etc/uci-defaults/95-lan-ip
+echo "✅ uci-defaults LAN 地址脚本已写入：$LAN_IP/$LAN_NETMASK"
 
 # ---------------------------------------------------------
 # 2. uci-defaults：即使保留了旧配置也强制刷成中国时区

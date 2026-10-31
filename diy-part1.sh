@@ -26,7 +26,9 @@ ADD_PASSWALL=false      # luci-app-passwall（含依赖源）
 ADD_OPENCLASH=false     # luci-app-openclash ⚠ 依赖 Ruby/Rust，编译极慢
 ADD_MOSDNS=false        # luci-app-mosdns + v2ray-geodata
 ADD_LUCKY=false         # luci-app-lucky（DDNS + socat）
-ADD_TAILSCALE=false     # luci-app-tailscale
+ADD_TAILSCALE=true      # luci-app-tailscale（asvow，依赖 base feed 的 tailscale 二进制）
+ADD_HOMEProxy=true       # luci-app-homeproxy（immortalwrt/homeproxy，UI+守护进程一体，核心用 sing-box）
+ADD_PASSWALL2=true       # luci-app-passwall2（Openwrt-Passwall/openwrt-passwall2 UI + openwrt-passwall-packages 后端）
 ADD_OPENLIST=false      # luci-app-openlist2（alist/openlist 挂载）
 ADD_SMARTDNS=false      # luci-app-smartdns
 ADD_EASYTIER=false      # luci-app-easytier（另需 kmod-tun + easytier 本体，Rust 编译较慢）
@@ -245,6 +247,21 @@ fi
 if [ "$ADD_TAILSCALE" = "true" ]; then
   clone https://github.com/asvow/luci-app-tailscale "$PKG_DIR/luci-app-tailscale" main
 fi
+# --- homeproxy（immortalwrt/homeproxy：luci-app-homeproxy 一个包内含 UI + 守护进程，
+#     依赖 +sing-box；sing-box 由下方 passwall2 的 openwrt-passwall-packages 提供，不重复）---
+if [ "$ADD_HOMEProxy" = "true" ]; then
+  clone https://github.com/immortalwrt/homeproxy "$PKG_DIR/homeproxy" master
+fi
+# --- passwall2 ---
+# UI 来自 Openwrt-Passwall/openwrt-passwall2（原 xiaorouji/openwrt-passwall2 已整体迁移到该 org，
+#   旧地址 404，不要再 clone xiaorouji/openwrt-passwall2）。该仓库只含 luci-app-passwall2 这个 UI。
+# 后端（sing-box / xray-core / v2ray-geodata / chinadns-ng / dns2socks / shadowsocks-rust …）
+# 来自 xiaorouji/openwrt-passwall-packages（仍可用）。
+# ⚠ 不要 clone 已失效的 xiaorouji/openwrt-passwall（v1 luci 仓库，现已 404）。
+if [ "$ADD_PASSWALL2" = "true" ]; then
+  clone https://github.com/Openwrt-Passwall/openwrt-passwall2 "$PKG_DIR/openwrt-passwall2" main
+  clone https://github.com/xiaorouji/openwrt-passwall-packages "$PKG_DIR/openwrt-passwall-packages" main
+fi
 # --- openlist2 ---
 if [ "$ADD_OPENLIST" = "true" ]; then
   clone https://github.com/sbwml/luci-app-openlist2 "$PKG_DIR/luci-app-openlist2" main
@@ -423,6 +440,10 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
   if [ "$ADD_LUCI_APP" = "true" ]; then
     REQUIRED="$REQUIRED luci-app-natmode luci-app-pon-status"
   fi
+  # 代理三件套（for-maym）：必装，缺失则 defconfig 会静默剔除
+  [ "$ADD_TAILSCALE" = "true" ] && REQUIRED="$REQUIRED luci-app-tailscale"
+  [ "$ADD_HOMEProxy" = "true" ]  && REQUIRED="$REQUIRED luci-app-homeproxy"
+  [ "$ADD_PASSWALL2"  = "true" ] && REQUIRED="$REQUIRED luci-app-passwall2"
   if [ "$ADD_FTTR" = "true" ] && [ "$FTTR_PROFILE" = "h3c_hm2004-du" ]; then
     # KernelPackage 生成的包名带 kmod- 前缀，索引里写的是 kmod-h3c-fmcs
     if [ "$ADD_FMCS" = "true" ]; then

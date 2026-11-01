@@ -23,9 +23,12 @@ ADD_FLUENT=true       # luci-theme-fluent：Fluent 2 风格主题
 ADD_FLUENT_LITE=false  # luci-theme-fluent-lite：轻量版（与 fluent 互斥，二选一）
 ADD_FLUENT_DASH=false  # luci-mod-fluentdashboard：可选状态概览卡片
 ADD_PASSWALL=false      # luci-app-passwall（v1）⚠ 上游仓库已 404，此开关已失效，请用 ADD_PASSWALL2
-ADD_PASSWALL2=true      # luci-app-passwall2 —— 只拉 UI；后端（sing-box / geoip / tcping …）
-                        #   feeds/packages 已全有，再 clone 一份会与 feeds 同名包重复定义
-                        #   注：luci-app-homeproxy / luci-app-zerotier 也在 feeds，无需开关
+ADD_PASSWALL2=false     # luci-app-passwall2 —— ⚠ 2026-11-01 按需求关闭，本分支只上
+                        #   homeproxy + zerotier 两个（passwall2 与 homeproxy 核心重叠，
+                        #   都是 sing-box，两套 UI 同时装意义不大）。
+                        #   需要时改回 true 即可，下方 clone 段与依赖说明完整保留，
+                        #   只拉 UI；后端（sing-box / geoip / tcping …）feeds/packages
+                        #   已全有，再 clone 一份会与 feeds 同名包重复定义。
 ADD_OPENCLASH=false     # luci-app-openclash ⚠ 依赖 Ruby/Rust，编译极慢
 ADD_MOSDNS=false        # luci-app-mosdns + v2ray-geodata
 ADD_LUCKY=false         # luci-app-lucky（DDNS + socat）
@@ -240,6 +243,8 @@ if [ "$ADD_PASSWALL" = "true" ]; then
 fi
 
 # --- passwall2 ---
+# ⚠ 当前 ADD_PASSWALL2=false（2026-11-01 按需求只保留 homeproxy + zerotier），
+#   本段不会执行。改回 true 即恢复，逻辑与说明完整保留。
 # 只需要拉 UI：上游 Openwrt-Passwall/openwrt-passwall2 是个 monorepo，
 # 根下只有 luci-app-passwall2/ 一个包目录（另加 .github / LICENSE / README）。
 #

@@ -6,7 +6,7 @@
 
 - 基线提交：`1bdb291`（= 上游 `main`）
 - 与 `main` 的差异：**18 个文件，+1015 / −23**
-- 2026-11-01 追加代理插件后，又动了 16 个文件（+661 / −4），详见第五节
+- 2026-11-01 追加代理/组网插件（**homeproxy + zerotier**，passwall2 同日移出）后，又动了 17 个文件，详见第五节
 
 ---
 
@@ -219,17 +219,26 @@ apk add --allow-untrusted ./libstdcpp6-*.apk
 
 ---
 
-## 五、代理插件（homeproxy / passwall2 / zerotier）—— 2026-11-01
+## 五、代理/组网插件（homeproxy / zerotier）—— 2026-11-01
 
-### 1. 三个组件到底从哪来
+> **⚠ 状态变更（2026-11-01 晚）**：**passwall2 已移除**，本分支最终只启用
+> **homeproxy + zerotier** 两个。`diy-part1.sh` 里 `ADD_PASSWALL2=false`，
+> 14 个 config 的第 25 节只剩 homeproxy / sing-box / zerotier 六行。
+> 理由：passwall2 与 homeproxy 内核同为 sing-box，两套 UI 功能高度重叠，
+> 同时装纯属浪费约 8~10 MB 体积和一份维护成本。
+> 下方 2~3 小节关于 passwall2 来源、`Basic Core` choice、`INCLUDE_*` 坑的
+> 分析仍完整保留 —— 将来要加回来只需 `ADD_PASSWALL2=true` 并恢复 config 里的
+> 那几行（GIT 历史里两个 commit 都有）。
+
+### 1. 两个组件到底从哪来
 
 | 组件 | 来源 | 需要 clone？ |
 |---|---|---|
 | `luci-app-homeproxy` | `feeds/luci/applications/luci-app-homeproxy` | **不需要**，feeds 自带 |
-| `luci-app-passwall2` | `Openwrt-Passwall/openwrt-passwall2` | **需要**，`diy-part1.sh` 的 `ADD_PASSWALL2` 拉取 |
 | `luci-app-zerotier` | `feeds/luci/applications/luci-app-zerotier` | **不需要** |
-| `sing-box` / `tcping` / `geoview` / `chinadns-ng` / `v2ray-geoip` / `v2ray-geosite` / `dns2socks` / `ipt2socks` / `microsocks` 等后端 | `feeds/packages`（= `immortalwrt/packages`） | **不需要** |
+| `sing-box`（homeproxy 核心）/ `ucode-mod-digest` / `kmod-nft-tproxy` | `feeds/packages` + 主源码 `package/utils/ucode` | **不需要** |
 | `zerotier` 后端 | `feeds/packages/net/zerotier`（1.16.2） | **不需要** |
+| ~~`luci-app-passwall2`~~ | ~~`Openwrt-Passwall/openwrt-passwall2`~~ | ~~需要~~ **已移除** |
 
 ### 2. passwall2 为什么不 clone 后端仓库（重点）
 
@@ -306,26 +315,30 @@ ponwrt 用 `firewall4`，`Nftables_Transparent_Proxy` 本来就默认 y；iptabl
 | 包 | 依赖 | 在 feeds 里？ |
 |---|---|---|
 | `luci-app-homeproxy` | `sing-box` / `firewall4` / `kmod-nft-tproxy` / `ucode-mod-digest` | ✓ 全部满足（`ucode-mod-digest` 由 `package/utils/ucode` 的 `digest` 模块生成） |
-| `luci-app-passwall2` | `tcping` / `geoview 0.2.9` / `v2ray-geoip` / `v2ray-geosite`（`v2ray-geodata` 的 `PROVIDES`）/ `lyaml` / `luci-lib-jsonc` / `ip-full` … | ✓ 全部满足 |
+| `luci-app-~~passwall2~~` | ~~`tcping` / `geoview` / `v2ray-geoip` / `v2ray-geosite` / `lyaml` / `luci-lib-jsonc` / `ip-full`~~ | **已移除**（2026-11-01），这些依赖随之不进固件 |
 | `zerotier` | `libstdcpp` / `kmod-tun` / `libminiupnpc` / `libnatpmp` / `libatomic` | ✓ `libstdcpp` 本分支已 `=y` |
 
 任一依赖缺失，`defconfig` 会把 `=y` **静默剔除**——所以 `build-ponwrt.yml`
 加了一道硬校验（第 5 处改动），编之前就 `exit 1`。
 
-### 7. 体积
+### 7. 体积（passwall2 移除后重算）
 
 基线（改前）单台 `squashfs-sysupgrade.itb` 约 **14 MB**。
 
 | 新增 | 估算 |
 |---|---|
-| `sing-box`（含 homeproxy + passwall2 共用一份） | +30~35 MB |
-| `v2ray-geoip` + `v2ray-geosite`（已是压缩 dat，squashfs 几乎不二次压） | +12~18 MB |
-| `luci-app-homeproxy` + `luci-app-passwall2` 界面（ucode/lua） | +2~3 MB |
-| `zerotier`（1.16.2） | +1.5~2 MB |
-| `tcping` / `geoview` / `chinadns-ng` / dns2socks / ipt2socks / microsocks | +1 MB |
-| **合计** | **约 +47~59 MB → 单台 60~75 MB** |
+| `sing-box`（homeproxy 唯一核心） | +30~35 MB |
+| `luci-app-homeproxy` 界面 + i18n（ucode） | +1~2 MB |
+| `zerotier`（1.16.2）+ `luci-app-zerotier` | +1.5~2 MB |
+| **合计** | **约 +33~39 MB → 单台 47~53 MB** |
 
-设备 NAND 256 MB、ubi 占满整片，75 MB 约占 30%，overlay 仍剩 ~170 MB。
+相比"passwall2 在的时候"省下的部分：`v2ray-geoip` + `v2ray-geosite`（**12~18 MB**，
+已压缩 dat、squashfs 几乎不二次压缩，是最大一块）、`luci-app-passwall2` 界面
+（~1 MB）、`tcping` / `geoview` / `chinadns-ng` / dns2socks / ipt2socks / microsocks（~1 MB）。
+**注意 `v2ray-geodata` 不会再进固件**——`sing-box` 与 `luci-app-homeproxy` 都不依赖它，
+homeproxy 的规则集是运行时从远程 rule-set 拉取，不占固件。
+
+设备 NAND 256 MB、ubi 占满整片，53 MB 约占 21%，overlay 仍剩 ~200 MB。
 
 ---
 
@@ -345,7 +358,7 @@ ponwrt 用 `firewall4`，`Nftables_Transparent_Proxy` 本来就默认 y；iptabl
 | 系统 | ImmortalWrt（ponwrt）+ LuCI + 中文（`zh_Hans`） |
 | 主题 | Fluent 2（`luci-theme-fluent`） |
 | 状态页 | `luci-app-airoha-npu`（NPU/CPU/Frame Engine/PPE）、`luci-app-pon-status`（PON 光模块）、`luci-app-natmode`（NAT 类型） |
-| 代理 | `luci-app-homeproxy` + `luci-app-passwall2`（底层**只有 sing-box**）+ `sing-box` 1.14.3 + `v2ray-geoip`/`v2ray-geosite` |
+| 代理 | `luci-app-homeproxy` + `sing-box` 1.14.3（homeproxy 唯一核心，**不带 xray / 不带 v2ray-geodata**） |
 | 组网 | `luci-app-zerotier` + `zerotier` 1.16.2 |
 | 远程 | `luci-app-frpc` |
 | AC 管理 | `luci-app-gecoosac`（仅 `h3c_hm2004-du`） |

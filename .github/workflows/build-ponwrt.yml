@@ -957,15 +957,15 @@ jobs:
 
           # =========================================================
           # 代理插件校验（2026-11-01）
-          #   passwall2 依赖链最长：tcping / geoview / v2ray-geoip /
-          #   v2ray-geosite / lyaml / luci-lib-jsonc …，任一依赖在 feeds
-          #   缺失都会被 defconfig 静默剔除；homeproxy 同理
-          #   （ucode-mod-digest / kmod-nft-tproxy）。
-          #   zerotier 后端 libstdcpp 已在上面校验，这里一并兜住界面。
+          #   homeproxy 依赖链较长：sing-box / ucode-mod-digest /
+          #   kmod-nft-tproxy / firewall4，任一依赖在 feeds 缺失都会被
+          #   defconfig 静默剔除。zerotier 后端 libstdcpp 已在上面校验，
+          #   这里一并兜住界面。
           #   编完才发现少个菜单，代价比在这里 exit 1 大得多。
+          #   （passwall2 已于同日移除，不再校验。）
           # =========================================================
           PROXY_MISS=""
-          for p in luci-app-passwall2 luci-app-homeproxy luci-app-zerotier sing-box zerotier; do
+          for p in luci-app-homeproxy luci-app-zerotier sing-box zerotier; do
             if ! grep -q "^CONFIG_PACKAGE_${p}=y" .config; then
               PROXY_MISS="$PROXY_MISS $p"
               echo "::warning::${p} 在 defconfig 后未启用"
@@ -979,7 +979,7 @@ jobs:
             echo "::error::以下代理插件在 defconfig 后未启用（多半是依赖缺失被静默剔除）:$PROXY_MISS"
             exit 1
           fi
-          echo "✅ 代理插件校验通过：passwall2(仅 sing-box) / homeproxy / zerotier"
+          echo "✅ 代理插件校验通过：homeproxy(仅 sing-box) / zerotier"
 
           # =========================================================
           # 状态插件校验：第三方包若在 package/custom 里缺失，

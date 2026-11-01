@@ -22,7 +22,10 @@ ADD_AIROHA_NPU=true    # luci-app-airoha-npu：Airoha SoC 状态页（NPU/CPU/Fr
 ADD_FLUENT=true       # luci-theme-fluent：Fluent 2 风格主题
 ADD_FLUENT_LITE=false  # luci-theme-fluent-lite：轻量版（与 fluent 互斥，二选一）
 ADD_FLUENT_DASH=false  # luci-mod-fluentdashboard：可选状态概览卡片
-ADD_PASSWALL=false      # luci-app-passwall（含依赖源）
+ADD_PASSWALL=false      # luci-app-passwall（v1）⚠ 上游仓库已 404，此开关已失效，请用 ADD_PASSWALL2
+ADD_PASSWALL2=true      # luci-app-passwall2 —— 只拉 UI；后端（sing-box / geoip / tcping …）
+                        #   feeds/packages 已全有，再 clone 一份会与 feeds 同名包重复定义
+                        #   注：luci-app-homeproxy / luci-app-zerotier 也在 feeds，无需开关
 ADD_OPENCLASH=false     # luci-app-openclash ⚠ 依赖 Ruby/Rust，编译极慢
 ADD_MOSDNS=false        # luci-app-mosdns + v2ray-geodata
 ADD_LUCKY=false         # luci-app-lucky（DDNS + socat）
@@ -226,12 +229,49 @@ if [ "$ADD_AIROHA_NPU" = "true" ]; then
   echo "   po/zh_Hans: $(ls -1 "$PODIR/zh_Hans/" 2>/dev/null | tr '\n' ' ')"
 fi
 
-# --- passwall ---
+# --- passwall（v1）---
+# ⚠ 2026 年起上游拆仓：xiaorouji/openwrt-passwall（v1 的 LuCI）已 404，
+#   这个开关拿不到界面了，保留只为兼容旧配置。请在 config 里改用 ADD_PASSWALL2。
 if [ "$ADD_PASSWALL" = "true" ]; then
+  echo "::warning::ADD_PASSWALL 指向的 xiaorouji/openwrt-passwall 已 404，请改用 ADD_PASSWALL2"
   clone https://github.com/xiaorouji/openwrt-passwall-packages "$PKG_DIR/openwrt-passwall-packages" main
   clone https://github.com/xiaorouji/openwrt-passwall "$PKG_DIR/openwrt-passwall" main
   rm -rf "$PKG_DIR/openwrt-passwall/luci-app-passwall2" 2>/dev/null
 fi
+
+# --- passwall2 ---
+# 只需要拉 UI：上游 Openwrt-Passwall/openwrt-passwall2 是个 monorepo，
+# 根下只有 luci-app-passwall2/ 一个包目录（另加 .github / LICENSE / README）。
+#
+# ⚠ 后端一律不 clone —— ponwrt 的 feeds(packages = immortalwrt/packages) 已自带
+#   全部依赖：sing-box / xray-core / v2ray-geodata(provides v2ray-geoip+geosite) /
+#   chinadns-ng / tcping / geoview / dns2socks / ipt2socks / microsocks / simple-obfs
+#   / shadowsocks-rust / shadowsocksr-libev / naiveproxy / hysteria / shadow-tls /
+#   v2ray-plugin / xray-plugin / smartdns。这 18 个包在
+#   xiaorouji/openwrt-passwall-packages 里也各有一份，**同名重复定义**会让
+#   scan.mk 报冲突、还会白编一遍 sing-box。2026-11-01 实测确认后才这么写。
+#
+# ⚠ UI 仓库必须展平：整仓留在 package/custom/openwrt-passwall2/ 时，下方
+#   「清理重复嵌套目录」会把内层同名结构误删（gecoosac 踩过同款坑）。
+if [ "$ADD_PASSWALL2" = "true" ]; then
+  PW2_TMP="$(mktemp -d)/openwrt-passwall2"
+  if clone https://github.com/Openwrt-Passwall/openwrt-passwall2 "$PW2_TMP" main; then
+    rm -rf "$PKG_DIR/luci-app-passwall2"
+    mv "$PW2_TMP/luci-app-passwall2" "$PKG_DIR/luci-app-passwall2"
+    rm -rf "$(dirname "$PW2_TMP")"
+    echo "✅ 已展平: luci-app-passwall2 (版本 $(grep -m1 '^PKG_VERSION' "$PKG_DIR/luci-app-passwall2/Makefile" 2>/dev/null | sed 's/PKG_VERSION:=//'))"
+    echo "   后端走 feeds/packages：sing-box $(grep -m1 '^PKG_VERSION' feeds/packages/net/sing-box/Makefile 2>/dev/null | sed 's/PKG_VERSION:=//')"
+  else
+    echo "::error::luci-app-passwall2 拉取失败，defconfig 会把 .config 里的 =y 静默剔除"
+    exit 1
+  fi
+fi
+
+# --- homeproxy / zerotier ---
+# 两者界面都已随 feeds 提供，无需 clone：
+#   luci-app-homeproxy  ← feeds/luci/applications/luci-app-homeproxy（核心用外面的 sing-box）
+#   luci-app-zerotier   ← feeds/luci/applications/luci-app-zerotier（后端 feeds/packages 的 zerotier）
+# config 里直接 =y 即可，索引天然存在，不必进 REQUIRED 校验。
 # --- openclash ---
 if [ "$ADD_OPENCLASH" = "true" ]; then
   echo "::warning::OpenClash 会触发 Ruby/Rust 编译，耗时极长"
@@ -551,6 +591,9 @@ if [ -n "$(ls -A "$PKG_DIR" 2>/dev/null)" ]; then
   # 集客 AC：降级（GECOOSAC_OK=false）时包已被主动摘掉，这里若再要求它进索引
   # 就会 exit 1，等于白降级 —— 所以必须带上开关判断
   [ "$ADD_GECOOSAC" = "true" ] && [ "$GECOOSAC_OK" = "true" ] && REQUIRED="$REQUIRED luci-app-gecoosac"
+  # 代理插件：homeproxy / zerotier 来自 feeds（索引天然存在），只有 passwall2 的
+  # UI 是外部 clone，必须校验 —— 索引里查不到就会被 defconfig 静默剔除。
+  [ "$ADD_PASSWALL2" = "true" ] && REQUIRED="$REQUIRED luci-app-passwall2"
   if [ "$ADD_LUCI_APP" = "true" ]; then
     REQUIRED="$REQUIRED luci-app-natmode luci-app-pon-status"
   fi

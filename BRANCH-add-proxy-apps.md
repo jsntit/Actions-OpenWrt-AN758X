@@ -6,6 +6,7 @@
 
 - 基线提交：`1bdb291`（= 上游 `main`）
 - 与 `main` 的差异：**18 个文件，+1015 / −23**
+- 2026-11-01 追加代理插件后，又动了 16 个文件（+661 / −4），详见第五节
 
 ---
 
@@ -141,7 +142,7 @@ gecoosac/            后端（预编译二进制）
 
 ---
 
-## 四、`build-ponwrt.yml` 改动（4 处）
+## 四、`build-ponwrt.yml` 改动（5 处）
 
 ### 1. `private_repo` 默认值改为 `none`
 
@@ -218,7 +219,117 @@ apk add --allow-untrusted ./libstdcpp6-*.apk
 
 ---
 
-## 五、怎么用这个分支
+## 五、代理插件（homeproxy / passwall2 / zerotier）—— 2026-11-01
+
+### 1. 三个组件到底从哪来
+
+| 组件 | 来源 | 需要 clone？ |
+|---|---|---|
+| `luci-app-homeproxy` | `feeds/luci/applications/luci-app-homeproxy` | **不需要**，feeds 自带 |
+| `luci-app-passwall2` | `Openwrt-Passwall/openwrt-passwall2` | **需要**，`diy-part1.sh` 的 `ADD_PASSWALL2` 拉取 |
+| `luci-app-zerotier` | `feeds/luci/applications/luci-app-zerotier` | **不需要** |
+| `sing-box` / `tcping` / `geoview` / `chinadns-ng` / `v2ray-geoip` / `v2ray-geosite` / `dns2socks` / `ipt2socks` / `microsocks` 等后端 | `feeds/packages`（= `immortalwrt/packages`） | **不需要** |
+| `zerotier` 后端 | `feeds/packages/net/zerotier`（1.16.2） | **不需要** |
+
+### 2. passwall2 为什么不 clone 后端仓库（重点）
+
+`xiaorouji/openwrt-passwall-packages` 的 18 个顶层包目录——
+`chinadns-ng`、`dns2socks`、`geoview`、`hysteria`、`ipt2socks`、`microsocks`、
+`naiveproxy`、`shadow-tls`、`shadowsocks-rust`、`shadowsocksr-libev`、`simple-obfs`、
+`sing-box`、`smartdns`、`tcping`、`v2ray-geodata`、`v2ray-plugin`、`xray-core`、`xray-plugin`
+——**在 `immortalwrt/packages` 里每一个都有一份同名包**。
+
+所以再从 passwall-packages clone 一份到 `package/custom`，等于：
+1. 同名包被定义两次，`scan.mk` 报冲突（`tmp/.packageinfo` 里只会留一个，行为取决于扫描顺序）；
+2. `sing-box` 白编一遍（feeds 里已经是 **1.14.3**，够用）。
+
+结论：**只 clone UI**。后端全部走 feeds，版本与 SDK 严格匹配。
+
+### 3. passwall2 底层只保留 sing-box 的实现
+
+`luci-app-passwall2` 的 `Makefile` 里 `Basic Core` 是个 **choice**：
+
+```kconfig
+choice
+    prompt "Basic Core"
+    default PACKAGE_luci-app-passwall2_Basic_Core_All if aarch64||arm||i386||x86_64
+    default PACKAGE_luci-app-passwall2_Basic_Core_Xray
+
+    config ..._Basic_Core_Xray
+        select PACKAGE_xray-core
+    config ..._Basic_Core_SingBox
+        select PACKAGE_sing-box          ← 只有这一个，不带 xray
+    config ..._Basic_Core_All
+        select PACKAGE_xray-core
+        select PACKAGE_sing-box
+endchoice
+```
+
+**aarch64 的默认值是 `All`（xray + sing-box 两个都装）**。所以要：
+
+```kconfig
+CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_SingBox=y
+# CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_All is not set
+# CONFIG_PACKAGE_luci-app-passwall2_Basic_Core_Xray is not set
+CONFIG_PACKAGE_sing-box=y
+# CONFIG_PACKAGE_xray-core is not set
+```
+
+### 4. 必须显式 `is not set` 的 7 个 INCLUDE_*
+
+这些在 aarch64 下 **默认就是 y**，只"不选"没用，必须写 `is not set` 才真关掉：
+
+| 符号 | 会拉进来的东西 |
+|---|---|
+| `..._INCLUDE_Haproxy` | `haproxy` |
+| `..._INCLUDE_Shadowsocks_Rust_Client` | `shadowsocks-rust-sslocal` |
+| `..._INCLUDE_Shadowsocks_Rust_Server` | `shadowsocks-rust-ssserver` |
+| `..._INCLUDE_ShadowsocksR_Libev_Client` | `shadowsocksr-libev-ssr-local` / `-redir` |
+| `..._INCLUDE_ShadowsocksR_Libev_Server` | `shadowsocksr-libev-ssr-server` |
+| `..._INCLUDE_Simple_Obfs` | `simple-obfs-client` |
+| `..._INCLUDE_V2ray_Plugin` | `v2ray-plugin` |
+
+漏掉任何一个，固件就会白白胖一圈（hapsroxy ~1.5MB、ss-rust ~4MB）。
+
+### 5. 透明代理只留 nftables
+
+```kconfig
+CONFIG_PACKAGE_luci-app-passwall2_Nftables_Transparent_Proxy=y
+# CONFIG_PACKAGE_luci-app-passwall2_Iptables_Transparent_Proxy is not set
+```
+
+ponwrt 用 `firewall4`，`Nftables_Transparent_Proxy` 本来就默认 y；iptables 那套会额外拉
+`ipset` / `iptables-zz-legacy` / 一堆 `kmod-ipt-*`，纯浪费。
+
+### 6. 依赖闭环（已逐项核实，2026-11-01）
+
+| 包 | 依赖 | 在 feeds 里？ |
+|---|---|---|
+| `luci-app-homeproxy` | `sing-box` / `firewall4` / `kmod-nft-tproxy` / `ucode-mod-digest` | ✓ 全部满足（`ucode-mod-digest` 由 `package/utils/ucode` 的 `digest` 模块生成） |
+| `luci-app-passwall2` | `tcping` / `geoview 0.2.9` / `v2ray-geoip` / `v2ray-geosite`（`v2ray-geodata` 的 `PROVIDES`）/ `lyaml` / `luci-lib-jsonc` / `ip-full` … | ✓ 全部满足 |
+| `zerotier` | `libstdcpp` / `kmod-tun` / `libminiupnpc` / `libnatpmp` / `libatomic` | ✓ `libstdcpp` 本分支已 `=y` |
+
+任一依赖缺失，`defconfig` 会把 `=y` **静默剔除**——所以 `build-ponwrt.yml`
+加了一道硬校验（第 5 处改动），编之前就 `exit 1`。
+
+### 7. 体积
+
+基线（改前）单台 `squashfs-sysupgrade.itb` 约 **14 MB**。
+
+| 新增 | 估算 |
+|---|---|
+| `sing-box`（含 homeproxy + passwall2 共用一份） | +30~35 MB |
+| `v2ray-geoip` + `v2ray-geosite`（已是压缩 dat，squashfs 几乎不二次压） | +12~18 MB |
+| `luci-app-homeproxy` + `luci-app-passwall2` 界面（ucode/lua） | +2~3 MB |
+| `zerotier`（1.16.2） | +1.5~2 MB |
+| `tcping` / `geoview` / `chinadns-ng` / dns2socks / ipt2socks / microsocks | +1 MB |
+| **合计** | **约 +47~59 MB → 单台 60~75 MB** |
+
+设备 NAND 256 MB、ubi 占满整片，75 MB 约占 30%，overlay 仍剩 ~170 MB。
+
+---
+
+## 六、怎么用这个分支
 
 1. Fork 后把默认分支切到 `add-proxy-apps`，或在 Actions 页面左上角手动选择该分支
 2. 跑 `Build PonWrt`：
@@ -234,14 +345,15 @@ apk add --allow-untrusted ./libstdcpp6-*.apk
 | 系统 | ImmortalWrt（ponwrt）+ LuCI + 中文（`zh_Hans`） |
 | 主题 | Fluent 2（`luci-theme-fluent`） |
 | 状态页 | `luci-app-airoha-npu`（NPU/CPU/Frame Engine/PPE）、`luci-app-pon-status`（PON 光模块）、`luci-app-natmode`（NAT 类型） |
-| 代理 | `kmod-nft-queue` + `libstdcpp` 已内置，`ssr-plus` / `homeproxy` 等可直接从源安装 |
+| 代理 | `luci-app-homeproxy` + `luci-app-passwall2`（底层**只有 sing-box**）+ `sing-box` 1.14.3 + `v2ray-geoip`/`v2ray-geosite` |
+| 组网 | `luci-app-zerotier` + `zerotier` 1.16.2 |
 | 远程 | `luci-app-frpc` |
 | AC 管理 | `luci-app-gecoosac`（仅 `h3c_hm2004-du`） |
 | ~~FTTR~~ | ~~已关闭~~ |
 
 ---
 
-## 六、同步上游时注意
+## 七、同步上游时注意
 
 本分支的自有改动全部是**新增**或**默认值调整**，不涉及结构重写。同步上游的推荐做法：
 

@@ -956,6 +956,32 @@ jobs:
           echo "✅ C++ 运行时 libstdcpp 校验通过（apk 产物名 libstdcpp6）"
 
           # =========================================================
+          # 代理插件校验（2026-11-01）
+          #   passwall2 依赖链最长：tcping / geoview / v2ray-geoip /
+          #   v2ray-geosite / lyaml / luci-lib-jsonc …，任一依赖在 feeds
+          #   缺失都会被 defconfig 静默剔除；homeproxy 同理
+          #   （ucode-mod-digest / kmod-nft-tproxy）。
+          #   zerotier 后端 libstdcpp 已在上面校验，这里一并兜住界面。
+          #   编完才发现少个菜单，代价比在这里 exit 1 大得多。
+          # =========================================================
+          PROXY_MISS=""
+          for p in luci-app-passwall2 luci-app-homeproxy luci-app-zerotier sing-box zerotier; do
+            if ! grep -q "^CONFIG_PACKAGE_${p}=y" .config; then
+              PROXY_MISS="$PROXY_MISS $p"
+              echo "::warning::${p} 在 defconfig 后未启用"
+              echo "  --- 诊断 ---"
+              echo "  1) package/custom/${p}: $([ -d "package/custom/${p}" ] && echo '存在' || echo '不在 custom（feeds 自带时正常）')"
+              echo "  2) 索引里的 Package 行数: $(grep -c "^Package: ${p}\$" tmp/.packageinfo 2>/dev/null)"
+              echo "  3) 机型 config 的 =y 行数: $(grep -c "^CONFIG_PACKAGE_${p}=y" "$GITHUB_WORKSPACE/${CONFIG_FILE}" 2>/dev/null)"
+            fi
+          done
+          if [ -n "$PROXY_MISS" ]; then
+            echo "::error::以下代理插件在 defconfig 后未启用（多半是依赖缺失被静默剔除）:$PROXY_MISS"
+            exit 1
+          fi
+          echo "✅ 代理插件校验通过：passwall2(仅 sing-box) / homeproxy / zerotier"
+
+          # =========================================================
           # 状态插件校验：第三方包若在 package/custom 里缺失，
           # defconfig 会把 .config 里的 =y 当无效符号静默删除，
           # 编完发现界面里没这个菜单时才察觉就晚了

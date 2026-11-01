@@ -14,8 +14,8 @@
 
 | 文件 | 变更 | 一句话说明 |
 |---|---|---|
-| `configs/*.config`（12 个机型） | +36 ×12 | 统一补 `kmod-nft-queue` / `libstdcpp` / `kmod-dummy`，再追加 `frpc` / `gecoosac` 全套 |
-| `configs/an7581.config`、`an7583.config`（SoC 基座镜像） | +19 ×2 | 只补 `kmod-nft-queue` / `libstdcpp` / `kmod-dummy`（CI 用的是上游源码里那份，插件不重复加） |
+| `configs/*.config`（12 个机型） | +60 左右 ×12 | 统一补 `kmod-nft-queue` / `libstdcpp` / `kmod-dummy`，再追加 `frpc` / `gecoosac` / homeproxy / zerotier / pw2 内核前置 |
+| `configs/an7581.config`、`an7583.config`（SoC 基座镜像） | +40 左右 ×2 | 同上补三项 + 第 25/26 段（代理插件与 pw2 内核前置，CI 用的是上游源码里那份，插件不重复加） |
 | `configs/h3c_hm2004-du.config` | +71 / −12 | 同上三项 + `frpc` / `gecoosac`，并**关闭 FTTR 下行** |
 | `diy-part1.sh` | +115 / −17 | 新增 `ADD_GECOOSAC`（含失败降级）；`ADD_FLUENT=true`；`ADD_FTTR` 默认 false |
 | `.github/workflows/build-ponwrt.yml` | +105 / −4 | `private_repo` 默认 none；libstdcpp 硬校验；dl 清理防误删；收集 apk |
@@ -339,6 +339,45 @@ ponwrt 用 `firewall4`，`Nftables_Transparent_Proxy` 本来就默认 y；iptabl
 homeproxy 的规则集是运行时从远程 rule-set 拉取，不占固件。
 
 设备 NAND 256 MB、ubi 占满整片，53 MB 约占 21%，overlay 仍剩 ~200 MB。
+
+### 8. 后装 passwall2：内核前置已预置（2026-11-01）
+
+固件里不带 pw2（与 homeproxy 同为 sing-box 内核、两套 UI 重复），但**内核前置全部预置**，
+将来想用 pw2 直接 `apk add` 装上就能跑，不会因为缺 kmod 起不来。
+
+依据是 pw2 26.10.x 源码 `luci-app-passwall2/root/usr/share/passwall2/app.sh` 的
+`check_dep()`——它启动时会去 `/lib/apk/packages/<pkg>.list`（旧系统是
+`/usr/lib/opkg/info/<pkg>.control`）逐个自查：
+
+```sh
+# nft 通路（firewall4 + dnsmasq-full nftset 时自动选中）
+dep_list="kmod-nft-socket kmod-nft-tproxy kmod-nft-nat"
+# iptables 通路（本固件用不到）
+dep_list="iptables-mod-tproxy iptables-mod-socket iptables-mod-iprange \
+          iptables-mod-conntrack-extra iptables-mod-extra kmod-ipt-nat"
+```
+
+`app.sh` 只查 nft 那 3 个；但走 sing-box 后端时还隐含需要 3 个（pw2 不自查，缺了
+「自动分流 / 进程识别」这类功能会静默失效）：
+
+| kmod | 作用 | 在 config 哪段 |
+|---|---|---|
+| `kmod-nft-socket` / `kmod-nft-tproxy` / `kmod-nft-nat` | 透明代理本体 | 第 4 段 |
+| `kmod-inet-diag` | sing-box 按进程识别并分配出口 | 第 4 段 |
+| `kmod-netlink-diag` | 同上，netlink 侧 | 第 4 段 |
+| `kmod-tun` | TUN 出站 / tun2socks | 第 5 段 |
+
+每个 `configs/*.config` 末尾新增的 **第 26 段**把这 6 个再显式 `=y` 一遍做保底
+（同值重复，`make defconfig` 会自动去重），以后改动第 4/5 段时别把它们删掉。
+
+**不做的事**：iptables 通路的 `ipset` / `iptables-zz-legacy` / 6 个 `kmod-ipt-*`
+不预置——固件是 `firewall4` + `dnsmasq-full(nftset)`，pw2 会自己选 nft 通路，
+装 iptables 栈纯属白占体积（也因为本分支基调是「全 nft，不引 iptables」）。
+
+后装时除 kmod 外的非内核依赖（`tcping` / `geoview` / `chinadns-ng` / `lyaml` /
+`luci-lib-jsonc` / `ip-full` / `unzip` / `v2ray-geoip` / `v2ray-geosite`）从源装即可，
+SourceForge 的 `openwrt-passwall-build` 三个目录（`passwall2` / `passwall_luci` /
+`passwall_packages`）里都有，架构目录选 `aarch64_cortex-a53`。
 
 ---
 

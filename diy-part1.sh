@@ -29,6 +29,9 @@ ADD_PASSWALL2=false     # luci-app-passwall2 —— ⚠ 2026-11-01 按需求关�
                         #   需要时改回 true 即可，下方 clone 段与依赖说明完整保留，
                         #   只拉 UI；后端（sing-box / geoip / tcping …）feeds/packages
                         #   已全有，再 clone 一份会与 feeds 同名包重复定义。
+                        #   内核前置已预置：每个 config 第 26 段固定 =y 了
+                        #   kmod-nft-socket/tproxy/nat + inet-diag/netlink-diag/tun，
+                        #   所以本分支即使不装 pw2，将来从 apk 源后装 pw2 也不缺 kmod。
 ADD_OPENCLASH=false     # luci-app-openclash ⚠ 依赖 Ruby/Rust，编译极慢
 ADD_MOSDNS=false        # luci-app-mosdns + v2ray-geodata
 ADD_LUCKY=false         # luci-app-lucky（DDNS + socat）
